@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+pydantic
+python-dotenv
+
+langchain
+langgraph
+
+sentence-transformers
+qdrant-client
+
+pymupdf
+pandas
+numpy
+requests

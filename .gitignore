@@ -1,0 +1,41 @@
+# Virtual environment
+venv/
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data
+data/raw/*
+data/processed/*
+data/vector_store/*
+
+# Models
+models/*.bin
+models/*.pt
+models/*.pth
+models/*.safetensors
+models/*.gguf
+
+# MLflow
+mlruns/
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+
+# Secrets
+*.key
+*.pem
