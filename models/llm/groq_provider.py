@@ -9,7 +9,7 @@ class GroqProvider(LLMProvider):
 
     def __init__(
         self,
-        model_name: str = "llama-3.3-70b-versatile",
+        model_name: str = "openai/gpt-oss-20b",
     ):
         if not settings.GROQ_API_KEY:
             raise ValueError(
