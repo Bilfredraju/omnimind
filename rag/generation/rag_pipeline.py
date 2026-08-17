@@ -114,3 +114,7 @@ class RAGPipeline:
                 "documents"
             ],
         }
+
+    def close(self):
+        """Close resources used by the RAG pipeline."""
+        self.retriever.close()

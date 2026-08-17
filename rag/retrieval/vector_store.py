@@ -101,3 +101,10 @@ class QdrantVectorStore:
         )
 
         return result.count
+    
+
+
+    def close(self):
+        
+        """Close the Qdrant client cleanly."""
+        self.client.close()

@@ -81,3 +81,5 @@ for source in result["sources"]:
 print("\n" + "=" * 60)
 print("RAG PIPELINE COMPLETE")
 print("=" * 60)
+
+pipeline.close()

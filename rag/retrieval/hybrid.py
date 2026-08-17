@@ -141,3 +141,7 @@ class HybridRetriever:
         )
 
         return results[:top_k]
+
+    def close(self):
+        """Close resources used by the hybrid retriever."""
+        self.semantic_retriever.close()

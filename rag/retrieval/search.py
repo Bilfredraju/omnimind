@@ -56,3 +56,7 @@ class SemanticRetriever:
             )
 
         return retrieved_documents
+
+    def close(self):
+        """Close the Qdrant client cleanly."""
+        self.client.close()
