@@ -51,6 +51,8 @@ for index, step in enumerate(
 
 print("\nCurrent Step:")
 print(updated_state["current_step"])
+print("\nSelected Route:")
+print(updated_state["route"])
 
 
 print("\n" + "=" * 60)

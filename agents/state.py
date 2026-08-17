@@ -12,6 +12,8 @@ class AgentState(TypedDict, total=False):
 
     current_step: str
 
+    route: str
+
     research_results: list[dict]
 
     rag_results: list[dict]
