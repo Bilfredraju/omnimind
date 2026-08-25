@@ -17,11 +17,11 @@ print("=" * 60)
 
 state: AgentState = {
     "query": (
-        "Find recent information about "
-        "Retrieval-Augmented Generation."
+        "latest developments in "
+        "Retrieval-Augmented Generation"
     ),
     "plan": [
-        "Perform external research",
+        "Perform external web research",
         "Analyze research results",
         "Generate the final answer",
     ],
@@ -35,6 +35,13 @@ state: AgentState = {
 }
 
 
+print("\nQuery:")
+print(state["query"])
+
+print("\nCalling Research Agent...")
+print("Research Agent → MCP Client → MCP Server → Web")
+
+
 agent = ResearchAgent()
 
 updated_state = agent.run(
@@ -42,29 +49,77 @@ updated_state = agent.run(
 )
 
 
-print("\nQuery:")
-print(updated_state["query"])
+if updated_state["current_step"] == "research_failed":
+
+    print("\n" + "=" * 60)
+    print("RESEARCH AGENT FAILED")
+    print("=" * 60)
+
+    print(
+        updated_state.get(
+            "error",
+            "Unknown error",
+        )
+    )
+
+    raise SystemExit(1)
 
 
-print("\nResearch Results:")
-print("-" * 60)
+print("\n" + "=" * 60)
+print("RESEARCH RESULTS")
+print("=" * 60)
+
+
+results = updated_state.get(
+    "research_results",
+    [],
+)
+
+
+print(
+    f"\nResults found: {len(results)}"
+)
+
 
 for index, result in enumerate(
-    updated_state["research_results"],
+    results,
     start=1,
 ):
+
     print(f"\nResult {index}")
 
     print(
-        f"Title: {result['title']}"
+        f"Title: "
+        f"{result.get('title', '')}"
     )
 
     print(
-        f"Source: {result['source']}"
+        f"URL: "
+        f"{result.get('url', '')}"
     )
 
     print(
-        f"Snippet: {result['snippet']}"
+        f"Snippet: "
+        f"{result.get('snippet', '')}"
+    )
+
+
+print("\n" + "=" * 60)
+print("SOURCES")
+print("=" * 60)
+
+
+for source in updated_state.get(
+    "sources",
+    [],
+):
+
+    print(
+        f"- {source['source']}"
+    )
+
+    print(
+        f"  {source['url']}"
     )
 
 
