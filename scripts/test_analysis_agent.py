@@ -6,89 +6,144 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.state import AgentState
-from agents.rag_agent import RAGAgent
 from agents.analysis_agent import AnalysisAgent
+from agents.state import AgentState
 
 
-PDF_PATH = (
-    PROJECT_ROOT
-    / "data"
-    / "raw"
-    / "sample.pdf"
+agent = AnalysisAgent()
+
+
+def run_test(
+    title: str,
+    state: AgentState,
+):
+    print("\n")
+    print("=" * 60)
+    print(title)
+    print("=" * 60)
+
+    result = agent.run(state)
+
+    print("\nAnalysis:")
+    print("-" * 60)
+    print(result["analysis"])
+
+    print("\nCurrent Step:")
+    print(result["current_step"])
+
+
+# ----------------------------------------------------------
+# Test 1 — RAG only
+# ----------------------------------------------------------
+
+run_test(
+    "TEST 1 — RAG EVIDENCE",
+    {
+        "query": (
+            "What datasets were used to evaluate "
+            "the RAG models?"
+        ),
+        "route": "rag",
+        "rag_results": [
+            {
+                "source": "sample.pdf",
+                "page": 4,
+                "chunk": 5,
+                "score": 0.82,
+                "text": (
+                    "The RAG models were evaluated "
+                    "on Natural Questions, TriviaQA, "
+                    "WebQuestions, CuratedTrec and "
+                    "MSMARCO."
+                ),
+            }
+        ],
+        "research_results": [],
+        "sources": [],
+    },
 )
 
 
-print("=" * 60)
-print("OMNIMIND ANALYSIS AGENT TEST")
-print("=" * 60)
+# ----------------------------------------------------------
+# Test 2 — Research only
+# ----------------------------------------------------------
 
-
-# ---------------------------------------------------------
-# Initial state
-# ---------------------------------------------------------
-
-state: AgentState = {
-    "query": (
-        "What datasets were used to evaluate "
-        "the RAG models?"
-    ),
-    "plan": [
-        "Retrieve relevant information",
-        "Analyze retrieved information",
-        "Generate final answer",
-    ],
-    "current_step": "rag",
-    "research_results": [],
-    "rag_results": [],
-    "analysis": "",
-    "final_answer": "",
-    "sources": [],
-}
-
-
-# ---------------------------------------------------------
-# RAG Agent
-# ---------------------------------------------------------
-
-rag_agent = RAGAgent(
-    pdf_path=str(PDF_PATH)
-)
-
-state = rag_agent.run(state)
-
-rag_agent.close()
-
-
-print(
-    f"\nRAG evidence collected: "
-    f"{len(state['rag_results'])}"
+run_test(
+    "TEST 2 — WEB RESEARCH",
+    {
+        "query": (
+            "What are recent developments "
+            "in Retrieval-Augmented Generation?"
+        ),
+        "route": "research",
+        "rag_results": [],
+        "research_results": [
+            {
+                "title": (
+                    "Retrieval-Augmented Generation: "
+                    "A Comprehensive Survey"
+                ),
+                "url": (
+                    "https://arxiv.org/"
+                ),
+                "snippet": (
+                    "Recent RAG research explores "
+                    "retrieval quality, grounding "
+                    "and architecture improvements."
+                ),
+            }
+        ],
+        "sources": [],
+    },
 )
 
 
-# ---------------------------------------------------------
-# Analysis Agent
-# ---------------------------------------------------------
+# ----------------------------------------------------------
+# Test 3 — Both
+# ----------------------------------------------------------
 
-analysis_agent = AnalysisAgent()
+run_test(
+    "TEST 3 — RAG + WEB RESEARCH",
+    {
+        "query": (
+            "Compare the RAG approach in my document "
+            "with recent developments in RAG."
+        ),
+        "route": "both",
+        "rag_results": [
+            {
+                "source": "sample.pdf",
+                "page": 4,
+                "chunk": 5,
+                "score": 0.82,
+                "text": (
+                    "The original RAG approach combines "
+                    "retrieval with generation using "
+                    "non-parametric memory."
+                ),
+            }
+        ],
+        "research_results": [
+            {
+                "title": (
+                    "Modern RAG Architectures"
+                ),
+                "url": (
+                    "https://arxiv.org/"
+                ),
+                "snippet": (
+                    "Modern RAG systems increasingly "
+                    "focus on retrieval quality, "
+                    "context selection and grounding."
+                ),
+            }
+        ],
+        "sources": [],
+    },
+)
 
-state = analysis_agent.run(state)
 
-
-# ---------------------------------------------------------
-# Display analysis
-# ---------------------------------------------------------
-
-print("\n" + "=" * 60)
-print("ANALYSIS RESULT")
+print("\n")
 print("=" * 60)
-
-print(state["analysis"])
-
-print("\nCurrent Step:")
-print(state["current_step"])
-
-
-print("\n" + "=" * 60)
-print("ANALYSIS AGENT SUCCESSFUL")
+print("ANALYSIS AGENT TESTS COMPLETE")
 print("=" * 60)
