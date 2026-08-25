@@ -6,133 +6,171 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.state import AgentState
-from agents.rag_agent import RAGAgent
-from agents.analysis_agent import AnalysisAgent
 from agents.synthesis_agent import SynthesisAgent
+from agents.state import AgentState
 
 
-PDF_PATH = (
-    PROJECT_ROOT
-    / "data"
-    / "raw"
-    / "sample.pdf"
+agent = SynthesisAgent()
+
+
+def run_test(
+    title: str,
+    state: AgentState,
+):
+    print("\n")
+    print("=" * 60)
+    print(title)
+    print("=" * 60)
+
+    result = agent.run(state)
+
+    print("\nFINAL ANSWER")
+    print("-" * 60)
+    print(result["final_answer"])
+
+    print("\nSOURCES")
+    print("-" * 60)
+
+    for source in result.get(
+        "sources",
+        [],
+    ):
+        print(source)
+
+    print("\nCURRENT STEP:")
+    print(result["current_step"])
+
+
+# ----------------------------------------------------------
+# Test 1 — RAG only
+# ----------------------------------------------------------
+
+run_test(
+    "TEST 1 — RAG SYNTHESIS",
+    {
+        "query": (
+            "What datasets were used to evaluate "
+            "the RAG models?"
+        ),
+        "route": "rag",
+        "analysis": (
+            "The document states that the RAG models "
+            "were evaluated on Natural Questions, "
+            "TriviaQA, WebQuestions, CuratedTrec "
+            "and MSMARCO."
+        ),
+        "rag_results": [
+            {
+                "source": "sample.pdf",
+                "page": 4,
+                "chunk": 5,
+                "score": 0.82,
+                "text": (
+                    "The RAG models were evaluated "
+                    "on Natural Questions, TriviaQA, "
+                    "WebQuestions, CuratedTrec and "
+                    "MSMARCO."
+                ),
+            }
+        ],
+        "research_results": [],
+        "sources": [],
+    },
 )
 
 
+# ----------------------------------------------------------
+# Test 2 — Research only
+# ----------------------------------------------------------
+
+run_test(
+    "TEST 2 — WEB SYNTHESIS",
+    {
+        "query": (
+            "What are recent developments "
+            "in Retrieval-Augmented Generation?"
+        ),
+        "route": "research",
+        "analysis": (
+            "Recent research focuses on improving "
+            "retrieval quality, grounding and "
+            "context selection."
+        ),
+        "rag_results": [],
+        "research_results": [
+            {
+                "title": (
+                    "Retrieval-Augmented Generation "
+                    "Survey"
+                ),
+                "url": (
+                    "https://arxiv.org/"
+                ),
+                "snippet": (
+                    "Recent RAG research explores "
+                    "retrieval quality, grounding "
+                    "and architecture improvements."
+                ),
+            }
+        ],
+        "sources": [],
+    },
+)
+
+
+# ----------------------------------------------------------
+# Test 3 — Both
+# ----------------------------------------------------------
+
+run_test(
+    "TEST 3 — RAG + WEB SYNTHESIS",
+    {
+        "query": (
+            "Compare the RAG approach in my document "
+            "with recent developments in RAG."
+        ),
+        "route": "both",
+        "analysis": (
+            "The document describes RAG as a system "
+            "combining retrieval with generation and "
+            "non-parametric memory. Recent research "
+            "focuses on improving retrieval quality, "
+            "context selection and grounding."
+        ),
+        "rag_results": [
+            {
+                "source": "sample.pdf",
+                "page": 4,
+                "chunk": 5,
+                "score": 0.82,
+                "text": (
+                    "The original RAG approach combines "
+                    "retrieval with generation using "
+                    "non-parametric memory."
+                ),
+            }
+        ],
+        "research_results": [
+            {
+                "title": (
+                    "Modern RAG Architectures"
+                ),
+                "url": (
+                    "https://arxiv.org/"
+                ),
+                "snippet": (
+                    "Modern RAG systems increasingly "
+                    "focus on retrieval quality, "
+                    "context selection and grounding."
+                ),
+            }
+        ],
+        "sources": [],
+    },
+)
+
+
+print("\n")
 print("=" * 60)
-print("OMNIMIND SYNTHESIS AGENT TEST")
-print("=" * 60)
-
-
-# ---------------------------------------------------------
-# Initial state
-# ---------------------------------------------------------
-
-state: AgentState = {
-    "query": (
-        "What datasets were used to evaluate "
-        "the RAG models?"
-    ),
-    "plan": [
-        "Retrieve relevant information",
-        "Analyze retrieved information",
-        "Generate final answer",
-    ],
-    "current_step": "rag",
-    "research_results": [],
-    "rag_results": [],
-    "analysis": "",
-    "final_answer": "",
-    "sources": [],
-}
-
-
-# ---------------------------------------------------------
-# RAG Agent
-# ---------------------------------------------------------
-
-rag_agent = RAGAgent(
-    pdf_path=str(PDF_PATH)
-)
-
-state = rag_agent.run(state)
-
-rag_agent.close()
-
-print(
-    f"\nRAG evidence collected: "
-    f"{len(state['rag_results'])}"
-)
-
-
-# ---------------------------------------------------------
-# Analysis Agent
-# ---------------------------------------------------------
-
-analysis_agent = AnalysisAgent()
-
-state = analysis_agent.run(state)
-
-print(
-    "\nAnalysis completed."
-)
-
-
-# ---------------------------------------------------------
-# Synthesis Agent
-# ---------------------------------------------------------
-
-synthesis_agent = SynthesisAgent()
-
-state = synthesis_agent.run(state)
-
-
-# ---------------------------------------------------------
-# Display final answer
-# ---------------------------------------------------------
-
-print("\n" + "=" * 60)
-print("OMNIMIND FINAL ANSWER")
-print("=" * 60)
-
-print(
-    state["final_answer"]
-)
-
-
-print("\n" + "=" * 60)
-print("SOURCES")
-print("=" * 60)
-
-seen = set()
-
-for source in state["sources"]:
-
-    key = (
-        source["source"],
-        source["page"],
-        source["chunk"],
-    )
-
-    if key in seen:
-        continue
-
-    seen.add(key)
-
-    print(
-        f"- {source['source']} "
-        f"| Page {source['page']} "
-        f"| Chunk {source['chunk']}"
-    )
-
-
-print("\nCurrent Step:")
-print(
-    state["current_step"]
-)
-
-
-print("\n" + "=" * 60)
-print("SYNTHESIS AGENT SUCCESSFUL")
+print("SYNTHESIS AGENT TESTS COMPLETE")
 print("=" * 60)
