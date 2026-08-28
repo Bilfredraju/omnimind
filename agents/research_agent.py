@@ -6,16 +6,32 @@ class ResearchAgent:
     """
     Research Agent responsible for external web research.
 
-    The agent delegates web searching to the OmniMind
-    Research MCP Server through the MCP client adapter.
+    Web search is delegated to the OmniMind Research MCP Server.
     """
 
-    def run(self, state: AgentState) -> AgentState:
+    def run(
+        self,
+        state: AgentState,
+    ) -> AgentState:
+
         query = state["query"]
 
+        # --------------------------------------------------
+        # Create a focused research query.
+        # --------------------------------------------------
+
+        research_query = query
+
+        if state.get("route") == "both":
+            research_query = (
+                "recent developments in "
+                "Retrieval-Augmented Generation"
+            )
+
         try:
+
             result = search_web(
-                query=query,
+                query=research_query,
                 max_results=5,
             )
 
@@ -24,14 +40,22 @@ class ResearchAgent:
                 [],
             )
 
-            # Convert research results into the shared
-            # OmniMind source format.
+            if not isinstance(
+                research_results,
+                list,
+            ):
+                research_results = []
+
             sources = list(
                 state.get(
                     "sources",
                     [],
                 )
             )
+
+            # --------------------------------------------------
+            # Add web sources.
+            # --------------------------------------------------
 
             for item in research_results:
 
@@ -65,6 +89,12 @@ class ResearchAgent:
             return {
                 **state,
                 "research_results": [],
+                "sources": list(
+                    state.get(
+                        "sources",
+                        [],
+                    )
+                ),
                 "current_step": "research_failed",
                 "error": str(exc),
             }

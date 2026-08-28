@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -18,9 +19,6 @@ SERVER_PATH = (
 class ResearchMCPClient:
     """
     Client adapter for the OmniMind Research MCP Server.
-
-    The client launches the MCP server as a subprocess
-    and communicates with it through the MCP stdio transport.
     """
 
     def __init__(self):
@@ -37,7 +35,8 @@ class ResearchMCPClient:
         max_results: int = 5,
     ) -> dict:
         """
-        Call the search_web MCP tool.
+        Call the search_web MCP tool and normalize
+        the MCP response into a Python dictionary.
         """
 
         async with stdio_client(
@@ -59,29 +58,54 @@ class ResearchMCPClient:
                     },
                 )
 
-                # MCP 2.0 provides structured_content
-                # for structured tool results.
+                # --------------------------------------------------
+                # Response format 1:
+                # MCP provides structured content.
+                # --------------------------------------------------
+
                 if result.structured_content:
                     return result.structured_content
 
-                # Fallback for text-only responses.
-                if result.content:
+                # --------------------------------------------------
+                # Response format 2:
+                # MCP returns JSON as text content.
+                # --------------------------------------------------
 
-                    first_content = result.content[0]
+                for content in result.content:
 
-                    if hasattr(
-                        first_content,
+                    if not hasattr(
+                        content,
                         "text",
                     ):
-                        return {
-                            "query": query,
-                            "results": [],
-                            "raw_text": first_content.text,
-                        }
+                        continue
+
+                    raw_text = content.text.strip()
+
+                    if not raw_text:
+                        continue
+
+                    try:
+                        parsed = json.loads(
+                            raw_text
+                        )
+
+                        if isinstance(
+                            parsed,
+                            dict,
+                        ):
+                            return parsed
+
+                    except json.JSONDecodeError:
+                        pass
+
+                # --------------------------------------------------
+                # No usable response.
+                # --------------------------------------------------
 
                 return {
                     "query": query,
                     "results": [],
+                    "count": 0,
                 }
 
 

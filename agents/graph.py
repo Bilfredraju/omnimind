@@ -57,13 +57,17 @@ class OmniMindGraph:
         )
 
         # --------------------------------------------------
-        # Initial route
+        # START → Planner
         # --------------------------------------------------
 
         graph.add_edge(
             START,
             "planner",
         )
+
+        # --------------------------------------------------
+        # Planner → RAG / Research
+        # --------------------------------------------------
 
         graph.add_conditional_edges(
             "planner",
@@ -76,7 +80,7 @@ class OmniMindGraph:
         )
 
         # --------------------------------------------------
-        # RAG route
+        # RAG → Analysis / Research
         # --------------------------------------------------
 
         graph.add_conditional_edges(
@@ -89,7 +93,7 @@ class OmniMindGraph:
         )
 
         # --------------------------------------------------
-        # Research route
+        # Research → Analysis
         # --------------------------------------------------
 
         graph.add_edge(
@@ -98,13 +102,17 @@ class OmniMindGraph:
         )
 
         # --------------------------------------------------
-        # Final pipeline
+        # Analysis → Synthesis
         # --------------------------------------------------
 
         graph.add_edge(
             "analysis",
             "synthesis",
         )
+
+        # --------------------------------------------------
+        # Synthesis → END
+        # --------------------------------------------------
 
         graph.add_edge(
             "synthesis",
@@ -125,7 +133,7 @@ class OmniMindGraph:
         return self.planner.plan(state)
 
     # ======================================================
-    # Routing
+    # Planner Routing
     # ======================================================
 
     def route_from_planner(
@@ -138,14 +146,17 @@ class OmniMindGraph:
             "rag",
         )
 
-        if route not in {
-            "rag",
-            "research",
-            "both",
-        }:
-            return "rag"
+        if route == "research":
+            return "research"
 
-        return route
+        if route == "both":
+            return "both"
+
+        return "rag"
+
+    # ======================================================
+    # Route after RAG
+    # ======================================================
 
     def route_after_rag(
         self,
@@ -171,7 +182,17 @@ class OmniMindGraph:
         state: AgentState,
     ) -> AgentState:
 
-        return self.rag_agent.run(state)
+        result = self.rag_agent.run(
+            state
+        )
+
+        return {
+            **result,
+            "route": state.get(
+                "route",
+                "rag",
+            ),
+        }
 
     # ======================================================
     # Research
@@ -182,7 +203,69 @@ class OmniMindGraph:
         state: AgentState,
     ) -> AgentState:
 
-        return self.research_agent.run(state)
+        print(
+            "\n[DEBUG] Research node entered"
+        )
+
+        print(
+            "[DEBUG] Route:",
+            state.get("route"),
+        )
+
+        print(
+            "[DEBUG] RAG results before research:",
+            len(
+                state.get(
+                    "rag_results",
+                    [],
+                )
+            ),
+        )
+
+        result = self.research_agent.run(
+            state
+        )
+
+        research_results = result.get(
+            "research_results",
+            [],
+        )
+
+        rag_results = state.get(
+            "rag_results",
+            [],
+        )
+
+        print(
+            "[DEBUG] Research results returned:",
+            len(research_results),
+        )
+
+        print(
+            "[DEBUG] RAG results preserved:",
+            len(rag_results),
+        )
+
+        return {
+            **state,
+            "research_results": research_results,
+            "rag_results": rag_results,
+            "route": state.get(
+                "route",
+                "research",
+            ),
+            "sources": result.get(
+                "sources",
+                state.get(
+                    "sources",
+                    [],
+                ),
+            ),
+            "current_step": result.get(
+                "current_step",
+                "research_complete",
+            ),
+        }
 
     # ======================================================
     # Analysis
@@ -193,7 +276,9 @@ class OmniMindGraph:
         state: AgentState,
     ) -> AgentState:
 
-        return self.analysis_agent.run(state)
+        return self.analysis_agent.run(
+            state
+        )
 
     # ======================================================
     # Synthesis
@@ -204,7 +289,9 @@ class OmniMindGraph:
         state: AgentState,
     ) -> AgentState:
 
-        return self.synthesis_agent.run(state)
+        return self.synthesis_agent.run(
+            state
+        )
 
     # ======================================================
     # Run
@@ -215,7 +302,9 @@ class OmniMindGraph:
         state: AgentState,
     ) -> AgentState:
 
-        return self.graph.invoke(state)
+        return self.graph.invoke(
+            state
+        )
 
     # ======================================================
     # Cleanup
