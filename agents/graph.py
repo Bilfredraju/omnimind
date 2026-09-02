@@ -130,7 +130,9 @@ class OmniMindGraph:
         state: AgentState,
     ) -> AgentState:
 
-        return self.planner.plan(state)
+        return self.planner.plan(
+            state
+        )
 
     # ======================================================
     # Planner Routing
@@ -203,25 +205,6 @@ class OmniMindGraph:
         state: AgentState,
     ) -> AgentState:
 
-        print(
-            "\n[DEBUG] Research node entered"
-        )
-
-        print(
-            "[DEBUG] Route:",
-            state.get("route"),
-        )
-
-        print(
-            "[DEBUG] RAG results before research:",
-            len(
-                state.get(
-                    "rag_results",
-                    [],
-                )
-            ),
-        )
-
         result = self.research_agent.run(
             state
         )
@@ -236,14 +219,9 @@ class OmniMindGraph:
             [],
         )
 
-        print(
-            "[DEBUG] Research results returned:",
-            len(research_results),
-        )
-
-        print(
-            "[DEBUG] RAG results preserved:",
-            len(rag_results),
+        error = result.get(
+            "error",
+            "",
         )
 
         return {
@@ -265,6 +243,7 @@ class OmniMindGraph:
                 "current_step",
                 "research_complete",
             ),
+            "error": error,
         }
 
     # ======================================================

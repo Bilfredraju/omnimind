@@ -12,7 +12,7 @@ class PlannerAgent:
         self.llm = GroqProvider()
 
     # ======================================================
-    # Deterministic routing
+    # Rule-Based Routing
     # ======================================================
 
     def _rule_based_route(
@@ -22,8 +22,14 @@ class PlannerAgent:
         """
         Determine the route using explicit query signals.
 
-        Returns:
-            "rag", "research", "both", or None
+        Priority:
+            1. both
+            2. research
+            3. rag
+
+        Ambiguous questions default to RAG because the
+        uploaded documents are OmniMind's primary knowledge
+        source.
         """
 
         query_lower = query.lower().strip()
@@ -31,18 +37,31 @@ class PlannerAgent:
         # --------------------------------------------------
         # BOTH
         # --------------------------------------------------
-        # These queries explicitly combine the user's
-        # document with current/external information.
+        # The user wants information from the document AND
+        # recent/current/external information.
         # --------------------------------------------------
 
         both_patterns = [
             r"\bcompare\b.*\b(recent|latest|current|external)\b",
-            r"\bcompare\b.*\b(document|pdf|paper|file)\b.*\b(recent|latest|current)\b",
-            r"\b(document|pdf|paper|file)\b.*\bcompare\b.*\b(recent|latest|current)\b",
+
+            r"\bcompare\b.*\b(document|pdf|paper|file)\b"
+            r".*\b(recent|latest|current|external)\b",
+
+            r"\b(document|pdf|paper|file)\b"
+            r".*\bcompare\b"
+            r".*\b(recent|latest|current|external)\b",
+
             r"\bmy document\b.*\b(research|web)\b",
             r"\bmy pdf\b.*\b(research|web)\b",
+            r"\bmy paper\b.*\b(research|web)\b",
+
             r"\buploaded document\b.*\b(research|web)\b",
             r"\buploaded pdf\b.*\b(research|web)\b",
+            r"\buploaded paper\b.*\b(research|web)\b",
+
+            r"\bcompare\b.*\bmy document\b",
+            r"\bcompare\b.*\bmy pdf\b",
+            r"\bcompare\b.*\bmy paper\b",
         ]
 
         for pattern in both_patterns:
@@ -54,6 +73,8 @@ class PlannerAgent:
 
         # --------------------------------------------------
         # RESEARCH
+        # --------------------------------------------------
+        # Explicit request for current/external information.
         # --------------------------------------------------
 
         research_keywords = [
@@ -77,6 +98,8 @@ class PlannerAgent:
         # --------------------------------------------------
         # RAG
         # --------------------------------------------------
+        # Explicit document-related questions.
+        # --------------------------------------------------
 
         document_keywords = [
             "my document",
@@ -91,24 +114,34 @@ class PlannerAgent:
             "this document",
             "this pdf",
             "this paper",
+            "document",
+            "pdf",
+            "paper",
+            "file",
         ]
 
         for keyword in document_keywords:
             if keyword in query_lower:
                 return "rag"
 
-        # No strong signal.
-        return None
+        # --------------------------------------------------
+        # DEFAULT → RAG
+        # --------------------------------------------------
+        # If the user did not explicitly request external
+        # or current information, use the uploaded documents.
+        # --------------------------------------------------
+
+        return "rag"
 
     # ======================================================
-    # Create execution plan
+    # Create Plan
     # ======================================================
 
     def _create_steps(
         self,
         route: str,
     ) -> list[str]:
-        """Create a plan based on the selected route."""
+        """Create execution steps for the selected route."""
 
         if route == "rag":
             return [
@@ -133,7 +166,7 @@ class PlannerAgent:
             ]
 
         return [
-            "Search relevant documents.",
+            "Search the uploaded documents for relevant information.",
             "Analyze the retrieved information.",
             "Generate the final answer.",
         ]
@@ -146,156 +179,34 @@ class PlannerAgent:
         self,
         state: AgentState,
     ) -> AgentState:
+        """
+        Analyze the user query and determine the execution
+        route and plan.
+        """
 
         query = state["query"]
 
         # --------------------------------------------------
-        # First use deterministic routing.
+        # First: deterministic routing
         # --------------------------------------------------
 
-        rule_route = self._rule_based_route(
+        route = self._rule_based_route(
             query
         )
 
-        if rule_route is not None:
-
-            steps = self._create_steps(
-                rule_route
-            )
-
-            return {
-                **state,
-                "plan": steps,
-                "route": rule_route,
-                "current_step": "planning_complete",
-            }
-
-        # --------------------------------------------------
-        # LLM fallback for ambiguous questions.
-        # --------------------------------------------------
-
-        prompt = f"""
-You are the Planner Agent in an autonomous AI system
-called OmniMind.
-
-Determine where the answer should come from.
-
-Available routes:
-
-"rag"
-Use when the answer should primarily come from the
-user's uploaded documents.
-
-"research"
-Use when the user needs external, current, recent,
-or web-based information.
-
-"both"
-Use when the user needs both the uploaded documents
-and external/current information.
-
-Rules:
-
-1. Return ONLY valid JSON.
-2. Include "route".
-3. Include "steps".
-4. route must be exactly:
-   rag, research, or both.
-5. steps must be a list.
-6. Do not answer the user's question.
-7. Do not include markdown.
-8. Do not include ```json.
-
-User request:
-{query}
-
-Return:
-
-{{
-    "route": "rag",
-    "steps": [
-        "..."
-    ]
-}}
-""".strip()
-
-        response = self.llm.generate(
-            prompt
+        steps = self._create_steps(
+            route
         )
 
-        try:
-
-            # --------------------------------------------------
-            # Remove accidental markdown fences.
-            # --------------------------------------------------
-
-            cleaned_response = response.strip()
-
-            if cleaned_response.startswith(
-                "```"
-            ):
-                cleaned_response = (
-                    cleaned_response
-                    .replace(
-                        "```json",
-                        "",
-                    )
-                    .replace(
-                        "```",
-                        "",
-                    )
-                    .strip()
-                )
-
-            parsed = json.loads(
-                cleaned_response
-            )
-
-            route = parsed.get(
-                "route",
-                "rag",
-            )
-
-            steps = parsed.get(
-                "steps",
-                [],
-            )
-
-            # --------------------------------------------------
-            # Validate route.
-            # --------------------------------------------------
-
-            if route not in {
-                "rag",
-                "research",
-                "both",
-            }:
-                raise ValueError(
-                    "Invalid planner route."
-                )
-
-            # --------------------------------------------------
-            # Validate steps.
-            # --------------------------------------------------
-
-            if not isinstance(
-                steps,
-                list,
-            ):
-                raise ValueError(
-                    "Planner steps must be a list."
-                )
-
-        except (
-            json.JSONDecodeError,
-            ValueError,
-        ):
-
-            route = "rag"
-
-            steps = self._create_steps(
-                "rag"
-            )
+        # --------------------------------------------------
+        # Return deterministic result
+        # --------------------------------------------------
+        #
+        # We intentionally do not ask the LLM to choose the
+        # route when the routing rules already determine it.
+        #
+        # This prevents inconsistent routing between runs.
+        # --------------------------------------------------
 
         return {
             **state,

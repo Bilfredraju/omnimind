@@ -8,7 +8,11 @@ class SynthesisAgent:
     def __init__(self):
         self.llm = GroqProvider()
 
-    def run(self, state: AgentState) -> AgentState:
+    def run(
+        self,
+        state: AgentState,
+    ) -> AgentState:
+
         query = state["query"]
 
         analysis = state.get(
@@ -32,7 +36,7 @@ class SynthesisAgent:
         )
 
         # --------------------------------------------------
-        # Check whether enough information exists
+        # Check for available evidence
         # --------------------------------------------------
 
         if (
@@ -46,27 +50,30 @@ class SynthesisAgent:
                     "I don't have enough evidence "
                     "to answer this question."
                 ),
+                "sources": [],
                 "current_step": "synthesis_complete",
             }
 
         # --------------------------------------------------
-        # Build evidence and sources
+        # Build evidence
         # --------------------------------------------------
 
-        sources = []
         evidence_sections = []
 
-        source_number = 1
+        sources = []
 
-        # --------------------------------------------------
-        # Document / RAG evidence
-        # --------------------------------------------------
+        # ==================================================
+        # DOCUMENT / RAG EVIDENCE
+        # ==================================================
 
         if rag_results:
 
             rag_evidence = []
 
-            for result in rag_results:
+            for index, result in enumerate(
+                rag_results,
+                start=1,
+            ):
 
                 source = result.get(
                     "source",
@@ -81,6 +88,11 @@ class SynthesisAgent:
                 chunk = result.get(
                     "chunk",
                     "Unknown",
+                )
+
+                score = result.get(
+                    "score",
+                    0.0,
                 )
 
                 text = result.get(
@@ -99,38 +111,42 @@ class SynthesisAgent:
 
                 rag_evidence.append(
                     f"""
-[Source {source_number}]
+[RAG Source {index}]
 Type: Document
 Document: {source}
 Page: {page}
 Chunk: {chunk}
+Retrieval Score: {score:.4f}
 
 {text}
 """.strip()
                 )
 
-                source_number += 1
-
             evidence_sections.append(
-                "DOCUMENT EVIDENCE\n\n"
+                "==================================================\n"
+                "DOCUMENT / RAG EVIDENCE\n"
+                "==================================================\n\n"
                 + "\n\n".join(
                     rag_evidence
                 )
             )
 
-        # --------------------------------------------------
-        # Web research evidence
-        # --------------------------------------------------
+        # ==================================================
+        # WEB RESEARCH EVIDENCE
+        # ==================================================
 
         if research_results:
 
             web_evidence = []
 
-            for result in research_results:
+            for index, result in enumerate(
+                research_results,
+                start=1,
+            ):
 
                 title = result.get(
                     "title",
-                    "Web source",
+                    "Unknown web source",
                 )
 
                 url = result.get(
@@ -153,19 +169,20 @@ Chunk: {chunk}
 
                 web_evidence.append(
                     f"""
-[Source {source_number}]
-Type: Web
+[Web Source {index}]
+Type: External Web Source
 Title: {title}
 URL: {url}
 
+Snippet:
 {snippet}
 """.strip()
                 )
 
-                source_number += 1
-
             evidence_sections.append(
-                "WEB RESEARCH EVIDENCE\n\n"
+                "==================================================\n"
+                "EXTERNAL WEB EVIDENCE\n"
+                "==================================================\n\n"
                 + "\n\n".join(
                     web_evidence
                 )
@@ -182,8 +199,9 @@ URL: {url}
         prompt = f"""
 You are the Synthesis Agent in OmniMind.
 
-Generate the final answer to the user's question using
-ONLY the analysis and evidence provided below.
+Your task is to produce the final answer to the user's
+question using ONLY the analysis and evidence supplied
+below.
 
 USER QUESTION:
 {query}
@@ -191,33 +209,88 @@ USER QUESTION:
 SELECTED ROUTE:
 {route}
 
-ANALYSIS:
+==================================================
+ANALYSIS
+==================================================
+
 {analysis}
 
-EVIDENCE:
+==================================================
+EVIDENCE
+==================================================
+
 {evidence}
 
-Rules:
+==================================================
+SYNTHESIS RULES
+==================================================
 
 1. Answer the user's question directly.
-2. Use only the provided analysis and evidence.
-3. Do not invent facts.
-4. Do not introduce outside knowledge.
-5. Clearly distinguish document evidence from web evidence.
-6. If the route is "both", compare the two evidence sources
-   when the user's question requires comparison.
-7. If the evidence is insufficient, say so clearly.
-8. Keep the answer concise but informative.
-9. For document evidence, cite claims using:
-   [Source N, Page X]
-10. For web evidence, cite claims using:
-    [Source N]
-11. Do not fabricate citations.
-12. Do not mention internal agents or the orchestration
-    process.
-13. Do not claim that a web search result proves something
-    beyond the information contained in its provided snippet.
-14. Prefer factual, evidence-grounded language.
+
+2. Use ONLY the supplied analysis and evidence.
+
+3. Do NOT use outside knowledge.
+
+4. Do NOT invent facts, sources, URLs, citations,
+   dataset names, dates, or technical details.
+
+5. When document evidence is available, treat it as
+   evidence from the user's uploaded material.
+
+6. When web evidence is available, treat it only as
+   information contained in the supplied search results
+   and snippets.
+
+7. Do NOT claim that a web snippet proves information
+   that is not actually contained in that snippet.
+
+8. For route "rag":
+   - Answer primarily from the document evidence.
+
+9. For route "research":
+   - Answer primarily from the external web evidence.
+   - Make clear when the supplied web evidence is
+     limited.
+
+10. For route "both":
+    - Use both document and web evidence.
+    - Explicitly distinguish what comes from the
+      document and what comes from external research.
+    - Compare them when the question asks for a
+      comparison.
+
+11. If the evidence is insufficient, say so clearly.
+
+12. If the evidence sources disagree, explain the
+    disagreement instead of choosing one without evidence.
+
+13. Keep the final answer concise but informative.
+
+14. Use readable formatting such as short paragraphs,
+    bullet points, or tables when appropriate.
+
+15. Document citations MUST use:
+    [Source N, Page X]
+
+16. Web citations MUST use:
+    [Web Source N]
+
+17. Only cite sources that actually appear in the
+    supplied evidence.
+
+18. Do not fabricate citation numbers.
+
+19. Do not mention:
+    - Planner Agent
+    - RAG Agent
+    - Research Agent
+    - Analysis Agent
+    - Synthesis Agent
+    - LangGraph
+    - MCP
+    - internal orchestration
+
+20. Return ONLY the final user-facing answer.
 
 FINAL ANSWER:
 """.strip()

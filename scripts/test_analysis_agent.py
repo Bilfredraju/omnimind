@@ -1,149 +1,124 @@
-import sys
-from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 from agents.analysis_agent import AnalysisAgent
-from agents.state import AgentState
 
 
 agent = AnalysisAgent()
 
 
-def run_test(
-    title: str,
-    state: AgentState,
-):
-    print("\n")
-    print("=" * 60)
-    print(title)
-    print("=" * 60)
+# ============================================================
+# TEST 1 — RAG ONLY
+# ============================================================
 
-    result = agent.run(state)
-
-    print("\nAnalysis:")
-    print("-" * 60)
-    print(result["analysis"])
-
-    print("\nCurrent Step:")
-    print(result["current_step"])
-
-
-# ----------------------------------------------------------
-# Test 1 — RAG only
-# ----------------------------------------------------------
-
-run_test(
-    "TEST 1 — RAG EVIDENCE",
-    {
-        "query": (
-            "What datasets were used to evaluate "
-            "the RAG models?"
-        ),
-        "route": "rag",
-        "rag_results": [
-            {
-                "source": "sample.pdf",
-                "page": 4,
-                "chunk": 5,
-                "score": 0.82,
-                "text": (
-                    "The RAG models were evaluated "
-                    "on Natural Questions, TriviaQA, "
-                    "WebQuestions, CuratedTrec and "
-                    "MSMARCO."
-                ),
-            }
-        ],
-        "research_results": [],
-        "sources": [],
-    },
-)
-
-
-# ----------------------------------------------------------
-# Test 2 — Research only
-# ----------------------------------------------------------
-
-run_test(
-    "TEST 2 — WEB RESEARCH",
-    {
-        "query": (
-            "What are recent developments "
-            "in Retrieval-Augmented Generation?"
-        ),
-        "route": "research",
-        "rag_results": [],
-        "research_results": [
-            {
-                "title": (
-                    "Retrieval-Augmented Generation: "
-                    "A Comprehensive Survey"
-                ),
-                "url": (
-                    "https://arxiv.org/"
-                ),
-                "snippet": (
-                    "Recent RAG research explores "
-                    "retrieval quality, grounding "
-                    "and architecture improvements."
-                ),
-            }
-        ],
-        "sources": [],
-    },
-)
-
-
-# ----------------------------------------------------------
-# Test 3 — Both
-# ----------------------------------------------------------
-
-run_test(
-    "TEST 3 — RAG + WEB RESEARCH",
-    {
-        "query": (
-            "Compare the RAG approach in my document "
-            "with recent developments in RAG."
-        ),
-        "route": "both",
-        "rag_results": [
-            {
-                "source": "sample.pdf",
-                "page": 4,
-                "chunk": 5,
-                "score": 0.82,
-                "text": (
-                    "The original RAG approach combines "
-                    "retrieval with generation using "
-                    "non-parametric memory."
-                ),
-            }
-        ],
-        "research_results": [
-            {
-                "title": (
-                    "Modern RAG Architectures"
-                ),
-                "url": (
-                    "https://arxiv.org/"
-                ),
-                "snippet": (
-                    "Modern RAG systems increasingly "
-                    "focus on retrieval quality, "
-                    "context selection and grounding."
-                ),
-            }
-        ],
-        "sources": [],
-    },
-)
-
-
-print("\n")
 print("=" * 60)
-print("ANALYSIS AGENT TESTS COMPLETE")
+print("TEST 1 — RAG ONLY")
+print("=" * 60)
+
+state = {
+    "query": "What datasets were used to evaluate the RAG models?",
+    "route": "rag",
+    "rag_results": [
+        {
+            "source": "sample.pdf",
+            "page": 4,
+            "chunk": 5,
+            "score": 0.91,
+            "text": (
+                "We evaluate RAG models on Natural Questions, "
+                "TriviaQA, WebQuestions and CuratedTrec."
+            ),
+        }
+    ],
+    "research_results": [],
+}
+
+result = agent.run(state)
+
+print("\nAnalysis:")
+print(result["analysis"])
+
+print("\nCurrent Step:")
+print(result["current_step"])
+
+
+# ============================================================
+# TEST 2 — RESEARCH ONLY
+# ============================================================
+
+print("\n" + "=" * 60)
+print("TEST 2 — RESEARCH ONLY")
+print("=" * 60)
+
+state = {
+    "query": "What are the latest developments in RAG?",
+    "route": "research",
+    "rag_results": [],
+    "research_results": [
+        {
+            "title": "Modern RAG Survey",
+            "url": "https://example.com/rag",
+            "snippet": (
+                "Recent RAG systems increasingly use "
+                "hybrid retrieval and multimodal evidence."
+            ),
+        }
+    ],
+}
+
+result = agent.run(state)
+
+print("\nAnalysis:")
+print(result["analysis"])
+
+print("\nCurrent Step:")
+print(result["current_step"])
+
+
+# ============================================================
+# TEST 3 — BOTH
+# ============================================================
+
+print("\n" + "=" * 60)
+print("TEST 3 — BOTH")
+print("=" * 60)
+
+state = {
+    "query": (
+        "Compare the RAG approach in my document "
+        "with recent developments in RAG."
+    ),
+    "route": "both",
+    "rag_results": [
+        {
+            "source": "sample.pdf",
+            "page": 2,
+            "chunk": 3,
+            "score": 0.89,
+            "text": (
+                "The original RAG architecture combines "
+                "BART with DPR and a Wikipedia index."
+            ),
+        }
+    ],
+    "research_results": [
+        {
+            "title": "Modern RAG Survey",
+            "url": "https://example.com/rag",
+            "snippet": (
+                "Modern RAG systems increasingly use "
+                "hybrid retrieval and multimodal evidence."
+            ),
+        }
+    ],
+}
+
+result = agent.run(state)
+
+print("\nAnalysis:")
+print(result["analysis"])
+
+print("\nCurrent Step:")
+print(result["current_step"])
+
+
+print("\n" + "=" * 60)
+print("ANALYSIS AGENT TEST COMPLETE")
 print("=" * 60)
