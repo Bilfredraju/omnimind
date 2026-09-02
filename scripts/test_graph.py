@@ -1,14 +1,28 @@
 import sys
 from pathlib import Path
 
+
+# ============================================================
+# PROJECT PATH
+# ============================================================
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+
+# ============================================================
+# IMPORTS
+# ============================================================
+
 from agents.state import AgentState
 from agents.graph import OmniMindGraph
 
+
+# ============================================================
+# PDF PATH
+# ============================================================
 
 PDF_PATH = (
     PROJECT_ROOT
@@ -18,12 +32,35 @@ PDF_PATH = (
 )
 
 
-def run_test(omnimind: OmniMindGraph, query: str):
+# ============================================================
+# TEST RUNNER
+# ============================================================
+
+def run_test(
+    query: str,
+):
+    """
+    Run one complete OmniMind graph execution.
+
+    A fresh graph instance is created for every test so
+    MCP server processes are completely isolated.
+    """
+
     print("\n")
     print("=" * 60)
     print("QUERY")
     print("=" * 60)
     print(query)
+
+    # --------------------------------------------------------
+    # Create a fresh graph for this test
+    # --------------------------------------------------------
+
+    print("\nInitializing OmniMind...")
+
+    omnimind = OmniMindGraph(
+        pdf_path=str(PDF_PATH)
+    )
 
     state: AgentState = {
         "query": query,
@@ -38,120 +75,250 @@ def run_test(omnimind: OmniMindGraph, query: str):
         "error": "",
     }
 
-    result = omnimind.run(state)
+    try:
 
-    print("\n" + "=" * 60)
-    print("SELECTED ROUTE")
-    print("=" * 60)
-    print(result.get("route", "unknown"))
+        # ----------------------------------------------------
+        # Execute graph
+        # ----------------------------------------------------
 
-    print("\n" + "=" * 60)
-    print("PLAN")
-    print("=" * 60)
+        result = omnimind.run(state)
 
-    for index, step in enumerate(
-        result.get("plan", []),
-        start=1
-    ):
-        print(f"{index}. {step}")
+        # ----------------------------------------------------
+        # Route
+        # ----------------------------------------------------
 
-    print("\n" + "=" * 60)
-    print("RAG RESULTS")
-    print("=" * 60)
-    print(len(result.get("rag_results", [])))
+        print("\n" + "=" * 60)
+        print("SELECTED ROUTE")
+        print("=" * 60)
 
-    print("\n" + "=" * 60)
-    print("RESEARCH RESULTS")
-    print("=" * 60)
-    print(len(result.get("research_results", [])))
-
-    print("\n" + "=" * 60)
-    print("FINAL ANSWER")
-    print("=" * 60)
-    print(result.get("final_answer", ""))
-
-    print("\n" + "=" * 60)
-    print("CURRENT STEP")
-    print("=" * 60)
-    print(result.get("current_step", ""))
-
-    print("\n" + "=" * 60)
-    print("SOURCES")
-    print("=" * 60)
-
-    seen = set()
-
-    for source in result.get("sources", []):
-        key = (
-            source.get("source", ""),
-            source.get("url", ""),
-            source.get("page", ""),
-            source.get("chunk", ""),
+        print(
+            result.get(
+                "route",
+                "unknown",
+            )
         )
 
-        if key in seen:
-            continue
+        # ----------------------------------------------------
+        # Plan
+        # ----------------------------------------------------
 
-        seen.add(key)
+        print("\n" + "=" * 60)
+        print("PLAN")
+        print("=" * 60)
 
-        print(f"- {source.get('source', '')}")
+        for index, step in enumerate(
+            result.get("plan", []),
+            start=1,
+        ):
+            print(
+                f"{index}. {step}"
+            )
 
-        if source.get("url"):
-            print(f"  URL: {source['url']}")
+        # ----------------------------------------------------
+        # RAG results
+        # ----------------------------------------------------
 
-        if source.get("page"):
-            print(f"  Page: {source['page']}")
+        print("\n" + "=" * 60)
+        print("RAG RESULTS")
+        print("=" * 60)
 
-    print("\n" + "=" * 60)
-    print("GRAPH EXECUTION SUCCESSFUL")
-    print("=" * 60)
+        print(
+            len(
+                result.get(
+                    "rag_results",
+                    [],
+                )
+            )
+        )
 
+        # ----------------------------------------------------
+        # Research results
+        # ----------------------------------------------------
+
+        print("\n" + "=" * 60)
+        print("RESEARCH RESULTS")
+        print("=" * 60)
+
+        print(
+            len(
+                result.get(
+                    "research_results",
+                    [],
+                )
+            )
+        )
+
+        # ----------------------------------------------------
+        # Final answer
+        # ----------------------------------------------------
+
+        print("\n" + "=" * 60)
+        print("FINAL ANSWER")
+        print("=" * 60)
+
+        print(
+            result.get(
+                "final_answer",
+                "",
+            )
+        )
+
+        # ----------------------------------------------------
+        # Current step
+        # ----------------------------------------------------
+
+        print("\n" + "=" * 60)
+        print("CURRENT STEP")
+        print("=" * 60)
+
+        print(
+            result.get(
+                "current_step",
+                "",
+            )
+        )
+
+        # ----------------------------------------------------
+        # Error
+        # ----------------------------------------------------
+
+        if result.get("error"):
+
+            print("\n" + "=" * 60)
+            print("ERROR")
+            print("=" * 60)
+
+            print(
+                result.get(
+                    "error",
+                    "",
+                )
+            )
+
+        # ----------------------------------------------------
+        # Sources
+        # ----------------------------------------------------
+
+        print("\n" + "=" * 60)
+        print("SOURCES")
+        print("=" * 60)
+
+        seen = set()
+
+        for source in result.get(
+            "sources",
+            [],
+        ):
+
+            key = (
+                source.get(
+                    "source",
+                    "",
+                ),
+                source.get(
+                    "url",
+                    "",
+                ),
+                source.get(
+                    "page",
+                    "",
+                ),
+                source.get(
+                    "chunk",
+                    "",
+                ),
+            )
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            print(
+                f"- {source.get('source', '')}"
+            )
+
+            if source.get("url"):
+
+                print(
+                    f"  URL: "
+                    f"{source['url']}"
+                )
+
+            if source.get("page"):
+
+                print(
+                    f"  Page: "
+                    f"{source['page']}"
+                )
+
+        # ----------------------------------------------------
+        # Success
+        # ----------------------------------------------------
+
+        print("\n" + "=" * 60)
+        print("GRAPH EXECUTION SUCCESSFUL")
+        print("=" * 60)
+
+        return result
+
+    finally:
+
+        # ----------------------------------------------------
+        # Close this graph before starting another test
+        # ----------------------------------------------------
+
+        print("\nClosing OmniMind...")
+
+        omnimind.close()
+
+        print("OmniMind closed.")
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 if __name__ == "__main__":
+
     print("=" * 60)
     print("OMNIMIND CONDITIONAL LANGGRAPH TEST")
     print("=" * 60)
 
-    print("\nInitializing OmniMind...")
-    print("Models will be loaded ONCE and reused.")
     print()
-
-    omnimind = OmniMindGraph(
-        pdf_path=str(PDF_PATH)
+    print(
+        "Each test uses a fresh graph instance."
     )
 
-    try:
-        # --------------------------------------------------
-        # TEST 1 — RAG
-        # --------------------------------------------------
+    print()
+    print(
+        "Document and Research MCP processes "
+        "are isolated between tests."
+    )
 
-        run_test(
-            omnimind,
-            "What datasets were used to evaluate "
-            "the RAG models?"
-        )
+    # --------------------------------------------------------
+    # TEST 1 — RAG
+    # --------------------------------------------------------
 
-        # --------------------------------------------------
-        # TEST 2 — RESEARCH
-        # --------------------------------------------------
+    run_test(
+        "What datasets were used to evaluate "
+        "the RAG models?"
+    )
 
-        run_test(
-            omnimind,
-            "What are the latest developments "
-            "in Retrieval-Augmented Generation?"
-        )
+    # --------------------------------------------------------
+    # TEST 2 — RESEARCH
+    # --------------------------------------------------------
 
-        # --------------------------------------------------
-        # TEST 3 — BOTH
-        # --------------------------------------------------
+    run_test(
+        "What are the latest developments "
+        "in Retrieval-Augmented Generation?"
+    )
 
-        run_test(
-            omnimind,
-            "Compare the RAG approach in my document "
-            "with recent developments in RAG."
-        )
+    # --------------------------------------------------------
+    # TEST 3 — BOTH
+    # --------------------------------------------------------
 
-    finally:
-        print("\nClosing OmniMind...")
-        omnimind.close()
-        print("OmniMind closed.")
+    run_test(
+        "Compare the RAG approach in my document "
+        "with recent developments in RAG."
+    )

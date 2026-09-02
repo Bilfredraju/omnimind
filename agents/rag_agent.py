@@ -1,103 +1,111 @@
-from pathlib import Path
-
 from agents.state import AgentState
-from rag.ingestion.loader import load_pdf
-from rag.ingestion.chunker import chunk_documents
-from rag.retrieval.hybrid import HybridRetriever
-from rag.retrieval.reranker import CrossEncoderReranker
+from mcp_clients.document_client import search_documents
 
 
 class RAGAgent:
-    """Agent responsible for retrieving evidence."""
+    """
+    RAG Agent responsible for document retrieval.
+
+    Document retrieval is delegated to the
+    OmniMind Document MCP Server.
+
+    Retrieval pipeline:
+
+        RAG Agent
+            ↓
+        Document MCP Client
+            ↓
+        Document MCP Server
+            ↓
+        Hybrid Retrieval
+            ↓
+        Cross-Encoder Reranking
+            ↓
+        Retrieved Evidence
+    """
 
     def __init__(
         self,
-        pdf_path: str,
+        pdf_path: str | None = None,
     ):
-        self.pdf_path = Path(pdf_path)
+        """
+        Initialize the RAG Agent.
 
-        if not self.pdf_path.exists():
-            raise FileNotFoundError(
-                f"PDF not found: {self.pdf_path}"
-            )
+        pdf_path is retained for compatibility with the
+        existing OmniMindGraph interface.
 
-        # Load document
-        documents = load_pdf(
-            str(self.pdf_path)
-        )
+        The actual document retrieval is now handled
+        entirely by the Document MCP Server.
+        """
 
-        # Create chunks
-        self.chunks = chunk_documents(
-            documents,
-            chunk_size=800,
-            chunk_overlap=150,
-        )
-
-        # Hybrid retrieval
-        self.retriever = HybridRetriever(
-            chunks=self.chunks,
-            semantic_weight=0.7,
-            keyword_weight=0.3,
-        )
-
-        # Reranker
-        self.reranker = CrossEncoderReranker()
+        self.pdf_path = pdf_path
 
     def run(
         self,
         state: AgentState,
     ) -> AgentState:
         """
-        Retrieve relevant evidence and add it to AgentState.
+        Retrieve relevant document evidence through MCP.
         """
 
         query = state["query"]
 
-        # -------------------------------------------------
-        # 1. Hybrid retrieval
-        # -------------------------------------------------
+        try:
 
-        candidates = self.retriever.search(
-            query=query,
-            top_k=10,
-        )
+            # ------------------------------------------------
+            # Call Document MCP
+            # ------------------------------------------------
 
-        # -------------------------------------------------
-        # 2. Reranking
-        # -------------------------------------------------
-
-        reranked = self.reranker.rerank(
-            query=query,
-            documents=candidates,
-            top_k=5,
-        )
-
-        # -------------------------------------------------
-        # 3. Store evidence in shared state
-        # -------------------------------------------------
-
-        rag_results = []
-
-        for result in reranked:
-            metadata = result["metadata"]
-
-            rag_results.append(
-                {
-                    "text": result["text"],
-                    "score": result["rerank_score"],
-                    "source": metadata["source"],
-                    "page": metadata["page"],
-                    "chunk": metadata["chunk_index"],
-                }
+            result = search_documents(
+                query=query,
+                top_k=5,
             )
 
-        return {
-            **state,
-            "rag_results": rag_results,
-            "current_step": "rag_complete",
-        }
+            # ------------------------------------------------
+            # Extract results
+            # ------------------------------------------------
+
+            rag_results = result.get(
+                "results",
+                [],
+            )
+
+            if not isinstance(
+                rag_results,
+                list,
+            ):
+                rag_results = []
+
+            # ------------------------------------------------
+            # Return updated state
+            # ------------------------------------------------
+
+            return {
+                **state,
+                "rag_results": rag_results,
+                "current_step": "rag_complete",
+                "error": result.get(
+                    "error",
+                    "",
+                ),
+            }
+
+        except Exception as exc:
+
+            return {
+                **state,
+                "rag_results": [],
+                "current_step": "rag_failed",
+                "error": str(exc),
+            }
 
     def close(self):
-        """Release retrieval resources."""
+        """
+        Compatibility method.
 
-        self.retriever.close()
+        Document MCP manages its own server-side
+        resources for each request, so there is
+        no persistent local retriever to close here.
+        """
+
+        return None

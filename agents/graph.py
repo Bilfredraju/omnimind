@@ -9,9 +9,19 @@ from agents.synthesis_agent import SynthesisAgent
 
 
 class OmniMindGraph:
-    """LangGraph orchestration for OmniMind agents."""
+    """
+    LangGraph orchestration for OmniMind agents.
 
-    def __init__(self, pdf_path: str):
+    Routes:
+        rag      -> RAG -> Analysis -> Synthesis
+        research -> Research -> Analysis -> Synthesis
+        both     -> RAG -> Research -> Analysis -> Synthesis
+    """
+
+    def __init__(
+        self,
+        pdf_path: str,
+    ):
 
         self.planner = PlannerAgent()
 
@@ -25,11 +35,15 @@ class OmniMindGraph:
 
         self.synthesis_agent = SynthesisAgent()
 
+        # ----------------------------------------------------
+        # Build graph
+        # ----------------------------------------------------
+
         graph = StateGraph(AgentState)
 
-        # --------------------------------------------------
+        # ----------------------------------------------------
         # Nodes
-        # --------------------------------------------------
+        # ----------------------------------------------------
 
         graph.add_node(
             "planner",
@@ -56,18 +70,18 @@ class OmniMindGraph:
             self.synthesis_node,
         )
 
-        # --------------------------------------------------
-        # START → Planner
-        # --------------------------------------------------
+        # ----------------------------------------------------
+        # START -> Planner
+        # ----------------------------------------------------
 
         graph.add_edge(
             START,
             "planner",
         )
 
-        # --------------------------------------------------
-        # Planner → RAG / Research
-        # --------------------------------------------------
+        # ----------------------------------------------------
+        # Planner -> RAG / Research
+        # ----------------------------------------------------
 
         graph.add_conditional_edges(
             "planner",
@@ -79,9 +93,9 @@ class OmniMindGraph:
             },
         )
 
-        # --------------------------------------------------
-        # RAG → Analysis / Research
-        # --------------------------------------------------
+        # ----------------------------------------------------
+        # RAG -> Analysis / Research
+        # ----------------------------------------------------
 
         graph.add_conditional_edges(
             "rag",
@@ -92,38 +106,42 @@ class OmniMindGraph:
             },
         )
 
-        # --------------------------------------------------
-        # Research → Analysis
-        # --------------------------------------------------
+        # ----------------------------------------------------
+        # Research -> Analysis
+        # ----------------------------------------------------
 
         graph.add_edge(
             "research",
             "analysis",
         )
 
-        # --------------------------------------------------
-        # Analysis → Synthesis
-        # --------------------------------------------------
+        # ----------------------------------------------------
+        # Analysis -> Synthesis
+        # ----------------------------------------------------
 
         graph.add_edge(
             "analysis",
             "synthesis",
         )
 
-        # --------------------------------------------------
-        # Synthesis → END
-        # --------------------------------------------------
+        # ----------------------------------------------------
+        # Synthesis -> END
+        # ----------------------------------------------------
 
         graph.add_edge(
             "synthesis",
             END,
         )
 
+        # ----------------------------------------------------
+        # Compile
+        # ----------------------------------------------------
+
         self.graph = graph.compile()
 
-    # ======================================================
-    # Planner
-    # ======================================================
+    # ========================================================
+    # PLANNER
+    # ========================================================
 
     def planner_node(
         self,
@@ -134,9 +152,9 @@ class OmniMindGraph:
             state
         )
 
-    # ======================================================
-    # Planner Routing
-    # ======================================================
+    # ========================================================
+    # PLANNER ROUTING
+    # ========================================================
 
     def route_from_planner(
         self,
@@ -156,9 +174,9 @@ class OmniMindGraph:
 
         return "rag"
 
-    # ======================================================
-    # Route after RAG
-    # ======================================================
+    # ========================================================
+    # ROUTE AFTER RAG
+    # ========================================================
 
     def route_after_rag(
         self,
@@ -175,80 +193,35 @@ class OmniMindGraph:
 
         return "analysis"
 
-    # ======================================================
-    # RAG
-    # ======================================================
+    # ========================================================
+    # RAG NODE
+    # ========================================================
 
     def rag_node(
         self,
         state: AgentState,
     ) -> AgentState:
 
-        result = self.rag_agent.run(
+        return self.rag_agent.run(
             state
         )
 
-        return {
-            **result,
-            "route": state.get(
-                "route",
-                "rag",
-            ),
-        }
-
-    # ======================================================
-    # Research
-    # ======================================================
+    # ========================================================
+    # RESEARCH NODE
+    # ========================================================
 
     def research_node(
         self,
         state: AgentState,
     ) -> AgentState:
 
-        result = self.research_agent.run(
+        return self.research_agent.run(
             state
         )
 
-        research_results = result.get(
-            "research_results",
-            [],
-        )
-
-        rag_results = state.get(
-            "rag_results",
-            [],
-        )
-
-        error = result.get(
-            "error",
-            "",
-        )
-
-        return {
-            **state,
-            "research_results": research_results,
-            "rag_results": rag_results,
-            "route": state.get(
-                "route",
-                "research",
-            ),
-            "sources": result.get(
-                "sources",
-                state.get(
-                    "sources",
-                    [],
-                ),
-            ),
-            "current_step": result.get(
-                "current_step",
-                "research_complete",
-            ),
-            "error": error,
-        }
-
-    # ======================================================
-    # Analysis
-    # ======================================================
+    # ========================================================
+    # ANALYSIS NODE
+    # ========================================================
 
     def analysis_node(
         self,
@@ -259,9 +232,9 @@ class OmniMindGraph:
             state
         )
 
-    # ======================================================
-    # Synthesis
-    # ======================================================
+    # ========================================================
+    # SYNTHESIS NODE
+    # ========================================================
 
     def synthesis_node(
         self,
@@ -272,9 +245,9 @@ class OmniMindGraph:
             state
         )
 
-    # ======================================================
-    # Run
-    # ======================================================
+    # ========================================================
+    # RUN
+    # ========================================================
 
     def run(
         self,
@@ -285,10 +258,17 @@ class OmniMindGraph:
             state
         )
 
-    # ======================================================
-    # Cleanup
-    # ======================================================
+    # ========================================================
+    # CLEANUP
+    # ========================================================
 
     def close(self):
+        """
+        Close resources owned by the graph.
+
+        The RAG agent currently delegates retrieval
+        to the Document MCP server, so its close()
+        method is a compatibility no-op.
+        """
 
         self.rag_agent.close()
