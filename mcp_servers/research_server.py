@@ -1,43 +1,28 @@
 from mcp.server import MCPServer
 from ddgs import DDGS
 
-
 mcp = MCPServer("OmniMind Research Server")
 
 
 @mcp.tool()
-def search_web(
-    query: str,
-    max_results: int = 5,
-) -> dict:
-    """
-    Search the public web and return relevant search results.
-
-    Args:
-        query: The web search query.
-        max_results: Maximum number of results to return.
-    """
-
+def search_web(query: str, max_results: int = 5) -> dict:
     query = query.strip()
 
     if not query:
         return {
             "query": query,
             "results": [],
+            "count": 0,
             "error": "Search query cannot be empty.",
         }
 
-    # Keep the number of results under control.
-    max_results = max(
-        1,
-        min(max_results, 10),
-    )
+    max_results = max(1, min(max_results, 10))
 
     try:
         results = DDGS().text(
             query,
             max_results=max_results,
-            backend="duckduckgo",
+            backend="auto",
         )
 
         formatted_results = []
@@ -45,23 +30,14 @@ def search_web(
         for result in results:
             formatted_results.append(
                 {
-                    "title": result.get(
-                        "title",
-                        "",
-                    ),
+                    "title": result.get("title", ""),
                     "url": result.get(
                         "href",
-                        result.get(
-                            "url",
-                            "",
-                        ),
+                        result.get("url", ""),
                     ),
                     "snippet": result.get(
                         "body",
-                        result.get(
-                            "description",
-                            "",
-                        ),
+                        result.get("description", ""),
                     ),
                 }
             )

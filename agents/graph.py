@@ -148,9 +148,16 @@ class OmniMindGraph:
         state: AgentState,
     ) -> AgentState:
 
-        return self.planner.plan(
-            state
-        )
+        result = self.planner.plan(state)
+
+        return {
+            "plan": result.get("plan", []),
+            "route": result.get("route", "rag"),
+            "current_step": result.get(
+                "current_step",
+                "planning_complete",
+            ),
+        }
 
     # ========================================================
     # PLANNER ROUTING
@@ -202,9 +209,18 @@ class OmniMindGraph:
         state: AgentState,
     ) -> AgentState:
 
-        return self.rag_agent.run(
-            state
-        )
+        result = self.rag_agent.run(state)
+
+        return {
+            "rag_results": result.get(
+                "rag_results",
+                [],
+            ),
+            "current_step": result.get(
+                "current_step",
+                "rag_complete",
+            ),
+        }
 
     # ========================================================
     # RESEARCH NODE
@@ -215,9 +231,26 @@ class OmniMindGraph:
         state: AgentState,
     ) -> AgentState:
 
-        return self.research_agent.run(
-            state
-        )
+        result = self.research_agent.run(state)
+
+        return {
+            "research_results": result.get(
+                "research_results",
+                [],
+            ),
+            "sources": result.get(
+                "sources",
+                state.get("sources", []),
+            ),
+            "current_step": result.get(
+                "current_step",
+                "research_complete",
+            ),
+            "error": result.get(
+                "error",
+                "",
+            ),
+        }
 
     # ========================================================
     # ANALYSIS NODE
@@ -228,9 +261,18 @@ class OmniMindGraph:
         state: AgentState,
     ) -> AgentState:
 
-        return self.analysis_agent.run(
-            state
-        )
+        result = self.analysis_agent.run(state)
+
+        return {
+            "analysis": result.get(
+                "analysis",
+                "",
+            ),
+            "current_step": result.get(
+                "current_step",
+                "analysis_complete",
+            ),
+        }
 
     # ========================================================
     # SYNTHESIS NODE
@@ -241,9 +283,22 @@ class OmniMindGraph:
         state: AgentState,
     ) -> AgentState:
 
-        return self.synthesis_agent.run(
-            state
-        )
+        result = self.synthesis_agent.run(state)
+
+        return {
+            "final_answer": result.get(
+                "final_answer",
+                "",
+            ),
+            "sources": result.get(
+                "sources",
+                state.get("sources", []),
+            ),
+            "current_step": result.get(
+                "current_step",
+                "synthesis_complete",
+            ),
+        }
 
     # ========================================================
     # RUN
@@ -265,10 +320,6 @@ class OmniMindGraph:
     def close(self):
         """
         Close resources owned by the graph.
-
-        The RAG agent currently delegates retrieval
-        to the Document MCP server, so its close()
-        method is a compatibility no-op.
         """
 
         self.rag_agent.close()
