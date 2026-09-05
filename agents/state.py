@@ -2,34 +2,63 @@ from typing import TypedDict
 
 
 class AgentState(TypedDict, total=False):
-    """
-    Shared state passed between OmniMind agents.
-    """
+    """Shared state passed between OmniMind agents."""
 
-    # User query
+    # ------------------------------------------------------------------
+    # User request
+    # ------------------------------------------------------------------
+
     query: str
 
-    # Planning
+    # ------------------------------------------------------------------
+    # Planning / routing
+    # ------------------------------------------------------------------
+
     plan: list[str]
     current_step: str
     route: str
 
+    # ------------------------------------------------------------------
     # Memory
+    # ------------------------------------------------------------------
+
     memory_results: list[dict]
     memory_context: str
     memory_written: bool
     memory_count: int
 
-    # Retrieval / research
-    research_results: list[dict]
+    # Temporal memory
+    temporal_intent: dict
+    temporal_memory_results: list[dict]
+    temporal_memory_context: str
+
+    # ------------------------------------------------------------------
+    # RAG
+    # ------------------------------------------------------------------
+
     rag_results: list[dict]
 
-    # Reasoning
+    # ------------------------------------------------------------------
+    # Research
+    # ------------------------------------------------------------------
+
+    research_results: list[dict]
+
+    # ------------------------------------------------------------------
+    # Analysis
+    # ------------------------------------------------------------------
+
     analysis: str
 
+    # ------------------------------------------------------------------
     # Final response
+    # ------------------------------------------------------------------
+
     final_answer: str
     sources: list[dict]
 
-    # Errors
+    # ------------------------------------------------------------------
+    # Error handling
+    # ------------------------------------------------------------------
+
     error: str

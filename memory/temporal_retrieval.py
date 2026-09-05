@@ -20,17 +20,14 @@ class TemporalConsolidatedRetrievalEngine:
     - timeline-aware temporal filtering
     - context generation
 
-    Important:
-    A consolidation's created_at is NOT assumed to be the
-    timestamp of every memory inside it.
-
-    When a timeline is available, temporal filtering is performed
-    against individual timeline events.
+    The engine is read-only.
+    It never modifies or deletes stored memories.
     """
 
-    CURRENT_MIN_SCORE = 0.70
+    CURRENT_MIN_SCORE = 0.60
 
     STOPWORDS = {
+        # General language
         "the",
         "and",
         "for",
@@ -85,7 +82,7 @@ class TemporalConsolidatedRetrievalEngine:
         "been",
         "being",
 
-        # Temporal terms are handled separately.
+        # Temporal expressions
         "ago",
         "month",
         "months",
@@ -96,6 +93,7 @@ class TemporalConsolidatedRetrievalEngine:
         "year",
         "years",
 
+        # Current / temporal intent
         "current",
         "currently",
         "latest",
@@ -104,14 +102,29 @@ class TemporalConsolidatedRetrievalEngine:
         "now",
         "today",
 
-        # Generic memory terms.
+        # Generic memory terminology
         "knowledge",
         "memory",
         "memories",
+    }
 
-        # IMPORTANT:
-        # project, omnimind, decide, decided, decision
-        # remain searchable.
+    # Terms that are too broad to independently identify a topic.
+    # They remain searchable but don't independently establish
+    # strong topic relevance.
+    BROAD_TERMS = {
+        "omnimind",
+        "project",
+        "decision",
+        "decide",
+        "decided",
+        "choice",
+        "choose",
+        "chose",
+        "use",
+        "used",
+        "using",
+        "thing",
+        "things",
     }
 
     def __init__(
@@ -137,14 +150,13 @@ class TemporalConsolidatedRetrievalEngine:
         top_k: int = 5,
     ) -> list[dict[str, Any]]:
         """
-        Retrieve consolidated memories.
+        Retrieve consolidated memories relevant to a query.
 
-        If a temporal range is supplied and a consolidation contains
-        a timeline, individual timeline events are checked against
-        the requested range.
+        Temporal filtering uses individual timeline events when
+        timeline information is available.
 
-        This prevents a later consolidation date from hiding an older
-        historical event.
+        If no timeline exists, consolidation.created_at is used
+        as a backward-compatible temporal fallback.
         """
 
         if not query or not query.strip():
@@ -182,32 +194,34 @@ class TemporalConsolidatedRetrievalEngine:
 
         for consolidation in self.store.all():
 
+            current_memory_id = (
+                consolidation.get(
+                    "current_memory_id"
+                )
+            )
+
             # ----------------------------------------------------------
             # Current-only mode
             # ----------------------------------------------------------
 
             if not include_historical:
 
-                current_memory_id = (
-                    consolidation.get(
-                        "current_memory_id"
-                    )
-                )
-
                 if not current_memory_id:
                     continue
 
             # ----------------------------------------------------------
-            # Timeline-aware temporal filtering
+            # Temporal filtering
             # ----------------------------------------------------------
 
-            matched_timeline_events = []
+            matched_timeline_events: list[
+                dict[str, Any]
+            ] = []
 
             if temporal_filter_requested:
 
                 timeline = consolidation.get(
                     "timeline",
-                    []
+                    [],
                 )
 
                 if timeline:
@@ -220,15 +234,11 @@ class TemporalConsolidatedRetrievalEngine:
                         )
                     )
 
-                    # If the consolidation has a timeline,
-                    # the timeline is authoritative for historical
-                    # temporal retrieval.
                     if not matched_timeline_events:
                         continue
 
                 else:
-                    # Backward compatibility:
-                    # older consolidations may not have a timeline.
+
                     created_at = (
                         self._parse_timestamp(
                             consolidation.get(
@@ -253,7 +263,7 @@ class TemporalConsolidatedRetrievalEngine:
                         continue
 
             # ----------------------------------------------------------
-            # Extract topic and summary
+            # Searchable consolidation fields
             # ----------------------------------------------------------
 
             topic = str(
@@ -279,7 +289,7 @@ class TemporalConsolidatedRetrievalEngine:
             )
 
             # ----------------------------------------------------------
-            # Include matching timeline text
+            # Timeline terms
             # ----------------------------------------------------------
 
             timeline_terms: set[str] = set()
@@ -294,11 +304,48 @@ class TemporalConsolidatedRetrievalEngine:
                 )
 
                 timeline_terms.update(
-                    self._tokenize(event_text)
+                    self._tokenize(
+                        event_text
+                    )
                 )
 
             # ----------------------------------------------------------
-            # Matching
+            # Current memory text
+            # ----------------------------------------------------------
+
+            current_memory_text = ""
+
+            timeline = consolidation.get(
+                "timeline",
+                [],
+            )
+
+            for event in timeline:
+
+                if (
+                    event.get(
+                        "memory_id"
+                    )
+                    == current_memory_id
+                ):
+
+                    current_memory_text = str(
+                        event.get(
+                            "text",
+                            "",
+                        )
+                    )
+
+                    break
+
+            current_memory_terms = (
+                self._tokenize(
+                    current_memory_text
+                )
+            )
+
+            # ----------------------------------------------------------
+            # Calculate overlaps
             # ----------------------------------------------------------
 
             topic_overlap = (
@@ -319,54 +366,165 @@ class TemporalConsolidatedRetrievalEngine:
                 )
             )
 
+            current_memory_overlap = (
+                query_terms.intersection(
+                    current_memory_terms
+                )
+            )
+
             overlap = (
                 topic_overlap
                 | summary_overlap
                 | timeline_overlap
+                | current_memory_overlap
             )
 
             if not overlap:
                 continue
 
             # ----------------------------------------------------------
-            # Relevance score
+            # Meaningful relevance guard
+            # ----------------------------------------------------------
+            #
+            # We don't simply require two matching terms.
+            #
+            # Example:
+            #
+            # "OmniMind authentication"
+            #
+            # should NOT retrieve:
+            #
+            # "OmniMind Vector Database"
+            #
+            # because only the broad term "OmniMind" matches.
+            #
+            # But:
+            #
+            # "What did I decide about my project 3 months ago?"
+            #
+            # should retrieve:
+            #
+            # "OmniMind Vector Database"
+            #
+            # because "project" and "decision" become normalized
+            # searchable terms.
+            #
+            # And:
+            #
+            # "OmniMind database"
+            #
+            # strongly matches the database topic.
+
+            if len(query_terms) >= 2:
+
+                specific_query_terms = (
+                    query_terms
+                    - self.BROAD_TERMS
+                )
+
+                specific_overlap = (
+                    overlap
+                    - self.BROAD_TERMS
+                )
+
+                # If the query contains specific terms,
+                # at least one specific term must match.
+                if (
+                    specific_query_terms
+                    and not specific_overlap
+                ):
+                    continue
+
+                # If every query term is broad,
+                # require at least two matching terms.
+                if (
+                    not specific_query_terms
+                    and len(overlap) < 2
+                ):
+                    continue
+
+            # ----------------------------------------------------------
+            # Field-specific ratios
             # ----------------------------------------------------------
 
-            score = (
+            query_size = len(query_terms)
+
+            overlap_ratio = (
                 len(overlap)
-                / len(query_terms)
+                / query_size
             )
 
-            # Topic relevance gets the strongest boost.
-            if topic_overlap:
+            topic_ratio = (
+                len(topic_overlap)
+                / query_size
+            )
 
-                score += (
-                    0.50
-                    * len(topic_overlap)
-                    / len(query_terms)
+            summary_ratio = (
+                len(summary_overlap)
+                / query_size
+            )
+
+            timeline_ratio = (
+                len(timeline_overlap)
+                / query_size
+            )
+
+            current_ratio = (
+                len(current_memory_overlap)
+                / query_size
+            )
+
+            # ----------------------------------------------------------
+            # Specific-term relevance
+            # ----------------------------------------------------------
+
+            specific_query_terms = (
+                query_terms
+                - self.BROAD_TERMS
+            )
+
+            specific_overlap = (
+                overlap
+                - self.BROAD_TERMS
+            )
+
+            if specific_query_terms:
+
+                specific_ratio = (
+                    len(specific_overlap)
+                    / len(specific_query_terms)
                 )
 
-            # Timeline event relevance is highly useful for
-            # historical questions.
-            if timeline_overlap:
+            else:
 
-                score += (
-                    0.35
-                    * len(timeline_overlap)
-                    / len(query_terms)
-                )
+                specific_ratio = 0.0
+
+            # ----------------------------------------------------------
+            # Weighted relevance score
+            # ----------------------------------------------------------
+            #
+            # General overlap       = 35%
+            # Topic relevance       = 30%
+            # Summary relevance     = 15%
+            # Timeline relevance    = 10%
+            # Current memory        = 5%
+            # Specific terms        = 5%
+
+            score = (
+                0.35 * overlap_ratio
+                + 0.30 * topic_ratio
+                + 0.15 * summary_ratio
+                + 0.10 * timeline_ratio
+                + 0.05 * current_ratio
+                + 0.05 * specific_ratio
+            )
 
             # Current knowledge boost.
-            if not include_historical:
-
-                current_memory_id = (
-                    consolidation.get(
-                        "current_memory_id"
-                    )
-                )
-
-                if current_memory_id:
-                    score += 0.15
+            if (
+                not include_historical
+                and current_memory_id
+            ):
+                score += 0.05
 
             # Historical knowledge boost.
             historical_ids = (
@@ -423,21 +581,41 @@ class TemporalConsolidatedRetrievalEngine:
         top_k: int = 5,
     ) -> list[dict[str, Any]]:
         """
-        Retrieve only current consolidated knowledge.
+        Retrieve current consolidated knowledge.
+
+        Only consolidations with a current_memory_id are eligible.
         """
 
         results = self.retrieve(
             query=query,
             include_historical=False,
-            top_k=top_k,
+            top_k=max(top_k, 10),
         )
 
-        return [
-            result
-            for result in results
-            if result["score"]
-            >= self.CURRENT_MIN_SCORE
-        ][:top_k]
+        current_results = []
+
+        for result in results:
+
+            consolidation = result[
+                "consolidation"
+            ]
+
+            if not consolidation.get(
+                "current_memory_id"
+            ):
+                continue
+
+            if (
+                result["score"]
+                < self.CURRENT_MIN_SCORE
+            ):
+                continue
+
+            current_results.append(
+                result
+            )
+
+        return current_results[:top_k]
 
     # ==================================================================
     # HISTORICAL RETRIEVAL
@@ -453,8 +631,8 @@ class TemporalConsolidatedRetrievalEngine:
         """
         Retrieve historical consolidated knowledge.
 
-        Temporal filtering is performed against individual timeline
-        events when a timeline exists.
+        If timeline data exists, historical events are selected
+        according to their individual timestamps.
         """
 
         results = self.retrieve(
@@ -462,7 +640,7 @@ class TemporalConsolidatedRetrievalEngine:
             start=start,
             end=end,
             include_historical=True,
-            top_k=top_k,
+            top_k=max(top_k, 10),
         )
 
         historical_results = []
@@ -485,17 +663,45 @@ class TemporalConsolidatedRetrievalEngine:
                 [],
             )
 
-            # If we have timeline matches, keep the result.
+            # ----------------------------------------------------------
+            # Timeline-aware historical retrieval
+            # ----------------------------------------------------------
+
             if matched_events:
 
-                historical_results.append(
-                    result
-                )
+                historical_events = [
+                    event
+                    for event in matched_events
+                    if (
+                        event.get(
+                            "memory_id"
+                        )
+                        in historical_ids
+                        or event.get(
+                            "status",
+                            "current",
+                        )
+                        != "current"
+                    )
+                ]
 
-                continue
+                if historical_events:
 
-            # Backward compatibility for consolidations
-            # without timelines.
+                    result[
+                        "matched_timeline_events"
+                    ] = historical_events
+
+                    historical_results.append(
+                        result
+                    )
+
+                    continue
+
+            # ----------------------------------------------------------
+            # Backward compatibility for consolidations without
+            # timelines.
+            # ----------------------------------------------------------
+
             if historical_ids:
 
                 historical_results.append(
@@ -612,8 +818,7 @@ class TemporalConsolidatedRetrievalEngine:
         end: datetime | None,
     ) -> list[dict[str, Any]]:
         """
-        Return timeline events whose own timestamps fall inside
-        the requested temporal range.
+        Return timeline events inside the requested date range.
         """
 
         matched = []
@@ -621,7 +826,9 @@ class TemporalConsolidatedRetrievalEngine:
         for event in timeline:
 
             timestamp = cls._parse_timestamp(
-                event.get("timestamp")
+                event.get(
+                    "timestamp"
+                )
             )
 
             if timestamp is None:
@@ -663,6 +870,26 @@ class TemporalConsolidatedRetrievalEngine:
     ) -> set[str]:
         """
         Normalize text into searchable terms.
+
+        Includes lightweight semantic normalization for common
+        memory/query variations such as:
+
+            decide
+            decided
+            deciding
+            decisions
+
+        -> decision
+
+        And:
+
+            database
+            databases
+
+        -> database
+
+        This allows natural-language queries to match stored
+        memory statements without requiring a full NLP model.
         """
 
         cleaned = (
@@ -680,12 +907,54 @@ class TemporalConsolidatedRetrievalEngine:
             .replace("'", " ")
         )
 
-        return {
-            token
-            for token in cleaned.split()
-            if len(token) > 2
-            and token not in cls.STOPWORDS
+        terms: set[str] = set()
+
+        aliases = {
+            # Decision normalization
+            "decide": "decision",
+            "decided": "decision",
+            "deciding": "decision",
+            "decisions": "decision",
+
+            # Choice normalization
+            "choose": "choice",
+            "chose": "choice",
+            "choosing": "choice",
+            "choices": "choice",
+
+            # Database normalization
+            "databases": "database",
+
+            # Project normalization
+            "projects": "project",
+
+            # Authentication normalization
+            "auth": "authentication",
+            "authenticate": "authentication",
+            "authenticated": "authentication",
+            "authenticating": "authentication",
         }
+
+        for token in cleaned.split():
+
+            if len(token) <= 2:
+                continue
+
+            if token in cls.STOPWORDS:
+                continue
+
+            normalized = aliases.get(
+                token,
+                token,
+            )
+
+            if (
+                len(normalized) > 2
+                and normalized not in cls.STOPWORDS
+            ):
+                terms.add(normalized)
+
+        return terms
 
     # ==================================================================
     # TIMESTAMP PARSING
@@ -695,9 +964,6 @@ class TemporalConsolidatedRetrievalEngine:
     def _parse_timestamp(
         value: Any,
     ) -> datetime | None:
-        """
-        Safely parse an ISO timestamp.
-        """
 
         if not value:
             return None
@@ -730,9 +996,6 @@ class TemporalConsolidatedRetrievalEngine:
     def _normalize_datetime(
         value: datetime,
     ) -> datetime:
-        """
-        Normalize datetime to UTC.
-        """
 
         if value.tzinfo is None:
 
