@@ -14,6 +14,13 @@ __pycache__/
 data/raw/*
 data/processed/*
 data/vector_store/*
+data/memory/*
+
+# Keep data directories in Git
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/vector_store/.gitkeep
+!data/memory/.gitkeep
 
 # Models
 models/*.bin
