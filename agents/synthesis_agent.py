@@ -3,7 +3,7 @@ from models.llm.groq_provider import GroqProvider
 
 
 class SynthesisAgent:
-    """Generate the final answer from multi-source evidence."""
+    """Generate the final answer from memory, document, and web evidence."""
 
     def __init__(self):
         self.llm = GroqProvider()
@@ -18,6 +18,11 @@ class SynthesisAgent:
         analysis = state.get(
             "analysis",
             "",
+        )
+
+        memory_results = state.get(
+            "memory_results",
+            [],
         )
 
         rag_results = state.get(
@@ -41,6 +46,7 @@ class SynthesisAgent:
 
         if (
             not analysis
+            and not memory_results
             and not rag_results
             and not research_results
         ):
@@ -61,6 +67,48 @@ class SynthesisAgent:
         evidence_sections = []
 
         sources = []
+
+        # ==================================================
+        # LONG-TERM MEMORY EVIDENCE
+        # ==================================================
+
+        if memory_results:
+
+            memory_evidence = []
+
+            for index, result in enumerate(
+                memory_results,
+                start=1,
+            ):
+
+                score = result.get(
+                    "score",
+                    0.0,
+                )
+
+                text = result.get(
+                    "text",
+                    "",
+                )
+
+                memory_evidence.append(
+                    f"""
+[Memory Source {index}]
+Type: Previous Conversation
+Relevance Score: {score:.4f}
+
+{text}
+""".strip()
+                )
+
+            evidence_sections.append(
+                "==================================================\n"
+                "LONG-TERM MEMORY EVIDENCE\n"
+                "==================================================\n\n"
+                + "\n\n".join(
+                    memory_evidence
+                )
+            )
 
         # ==================================================
         # DOCUMENT / RAG EVIDENCE
@@ -234,53 +282,73 @@ SYNTHESIS RULES
 4. Do NOT invent facts, sources, URLs, citations,
    dataset names, dates, or technical details.
 
-5. When document evidence is available, treat it as
+5. Previous conversation memory represents historical
+   context from earlier OmniMind interactions.
+
+6. When memory evidence is available:
+   - use it to answer questions about previous
+     conversations, decisions, plans, or statements
+   - make clear that the information comes from
+     previous conversation context when appropriate
+   - do not assume that an old statement is still
+     current if newer evidence contradicts it
+
+7. When document evidence is available, treat it as
    evidence from the user's uploaded material.
 
-6. When web evidence is available, treat it only as
+8. When web evidence is available, treat it only as
    information contained in the supplied search results
    and snippets.
 
-7. Do NOT claim that a web snippet proves information
+9. Do NOT claim that a web snippet proves information
    that is not actually contained in that snippet.
 
-8. For route "rag":
-   - Answer primarily from the document evidence.
+10. For route "rag":
+    - Answer primarily from the document evidence.
 
-9. For route "research":
-   - Answer primarily from the external web evidence.
-   - Make clear when the supplied web evidence is
-     limited.
+11. For route "research":
+    - Answer primarily from the external web evidence.
+    - Make clear when the supplied web evidence is
+      limited.
 
-10. For route "both":
+12. For route "both":
     - Use both document and web evidence.
     - Explicitly distinguish what comes from the
       document and what comes from external research.
     - Compare them when the question asks for a
       comparison.
 
-11. If the evidence is insufficient, say so clearly.
+13. If memory and current evidence disagree:
+    - identify the disagreement
+    - prefer newer/current evidence when it is explicitly
+      supported
+    - do not silently rewrite historical memory
 
-12. If the evidence sources disagree, explain the
+14. If the evidence is insufficient, say so clearly.
+
+15. If the evidence sources disagree, explain the
     disagreement instead of choosing one without evidence.
 
-13. Keep the final answer concise but informative.
+16. Keep the final answer concise but informative.
 
-14. Use readable formatting such as short paragraphs,
+17. Use readable formatting such as short paragraphs,
     bullet points, or tables when appropriate.
 
-15. Document citations MUST use:
+18. Document citations MUST use:
     [Source N, Page X]
 
-16. Web citations MUST use:
+19. Web citations MUST use:
     [Web Source N]
 
-17. Only cite sources that actually appear in the
+20. Memory does NOT require fabricated citation numbers.
+    Refer to it naturally as previous conversation context.
+
+21. Only cite sources that actually appear in the
     supplied evidence.
 
-18. Do not fabricate citation numbers.
+22. Do not fabricate citation numbers.
 
-19. Do not mention:
+23. Do not mention:
     - Planner Agent
     - RAG Agent
     - Research Agent
@@ -290,7 +358,7 @@ SYNTHESIS RULES
     - MCP
     - internal orchestration
 
-20. Return ONLY the final user-facing answer.
+24. Return ONLY the final user-facing answer.
 
 FINAL ANSWER:
 """.strip()

@@ -3,7 +3,7 @@ from models.llm.groq_provider import GroqProvider
 
 
 class AnalysisAgent:
-    """Analyze evidence collected from RAG and web research."""
+    """Analyze evidence collected from memory, RAG, and web research."""
 
     def __init__(self):
         self.llm = GroqProvider()
@@ -14,6 +14,11 @@ class AnalysisAgent:
     ) -> AgentState:
 
         query = state["query"]
+
+        memory_results = state.get(
+            "memory_results",
+            [],
+        )
 
         rag_results = state.get(
             "rag_results",
@@ -29,7 +34,11 @@ class AnalysisAgent:
         # Check whether any evidence exists
         # --------------------------------------------------
 
-        if not rag_results and not research_results:
+        if (
+            not memory_results
+            and not rag_results
+            and not research_results
+        ):
 
             return {
                 **state,
@@ -39,6 +48,33 @@ class AnalysisAgent:
                 ),
                 "current_step": "analysis_complete",
             }
+
+        # --------------------------------------------------
+        # Build memory evidence
+        # --------------------------------------------------
+
+        memory_evidence = []
+
+        for index, result in enumerate(
+            memory_results,
+            start=1,
+        ):
+
+            memory_evidence.append(
+                f"""
+[Memory Evidence {index}]
+Relevance Score: {result.get("score", 0.0):.4f}
+
+{result.get("text", "")}
+""".strip()
+            )
+
+        memory_text = "\n\n".join(
+            memory_evidence
+        )
+
+        if not memory_text:
+            memory_text = "No relevant memory evidence available."
 
         # --------------------------------------------------
         # Build RAG evidence
@@ -105,11 +141,17 @@ URL: {result.get("url", "")}
         prompt = f"""
 You are the Analysis Agent in OmniMind.
 
-Analyze the evidence collected from the user's documents
-and/or external web research.
+Analyze the evidence collected from the user's long-term
+memory, documents, and/or external web research.
 
 USER QUESTION:
 {query}
+
+==================================================
+LONG-TERM MEMORY EVIDENCE
+==================================================
+
+{memory_text}
 
 ==================================================
 DOCUMENT / RAG EVIDENCE
@@ -135,27 +177,38 @@ ANALYSIS RULES
    user's question.
 
 4. Clearly distinguish between:
+   - information from long-term memory
    - information from the user's documents
    - information from external web research
 
-5. When both sources are available:
+5. Memory evidence represents information from
+   previous OmniMind conversations. Treat it as
+   historical context, not automatically as current truth.
+
+6. When memory and current evidence are both available:
+   - compare them when relevant
+   - identify whether previous decisions or statements
+     are consistent with current evidence
+   - identify meaningful changes or conflicts
+
+7. When both document and web evidence are available:
    - compare them when relevant
    - identify similarities
    - identify differences
    - identify meaningful extensions or gaps
 
-6. If the evidence conflicts, explicitly mention
+8. If the evidence conflicts, explicitly mention
    the conflict.
 
-7. Do not treat a web source as proof merely because
+9. Do not treat a web source as proof merely because
    it appears in the search results.
 
-8. Do not produce a polished final answer.
+10. Do not produce a polished final answer.
 
-9. Produce concise analytical notes that the
-   Synthesis Agent can use.
+11. Produce concise analytical notes that the
+    Synthesis Agent can use.
 
-10. If one evidence source is unavailable, do not
+12. If one evidence source is unavailable, do not
     pretend that it exists.
 
 ANALYSIS:
