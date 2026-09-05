@@ -10,18 +10,16 @@ class MemoryAgent:
 
     Responsibilities:
         1. Recall semantically relevant memories.
-        2. Extract important memories from conversations.
-        3. Persist useful memories.
+        2. Apply temporal filtering when the query contains
+           a time reference.
+        3. Extract important memories from conversations.
+        4. Persist useful memories.
     """
 
     def __init__(self):
         self.memory_manager = MemoryManager()
         self.semantic_store = SemanticMemoryStore()
         self.extractor = MemoryExtractor()
-
-    # ==================================================
-    # MEMORY RECALL
-    # ==================================================
 
     def recall(
         self,
@@ -41,11 +39,10 @@ class MemoryAgent:
             }
 
         try:
-
             results = self.semantic_store.search(
                 query=query,
                 top_k=5,
-                min_score=0.35,
+                min_score=0.30,
             )
 
             memory_sections = []
@@ -54,25 +51,63 @@ class MemoryAgent:
                 results,
                 start=1,
             ):
+                metadata = memory.get(
+                    "metadata",
+                    {},
+                )
+
+                memory_id = memory.get(
+                    "memory_id",
+                    "unknown",
+                )
+
+                memory_type = metadata.get(
+                    "type",
+                    "unknown",
+                )
+
+                importance = metadata.get(
+                    "importance",
+                    0.0,
+                )
+
+                created_at = metadata.get(
+                    "created_at",
+                    "unknown",
+                )
+
+                relevance_score = memory.get(
+                    "score",
+                    0.0,
+                )
+
+                ranking_score = memory.get(
+                    "ranking_score",
+                    0.0,
+                )
+
+                temporal_filter = memory.get(
+                    "temporal_filter",
+                    "none",
+                )
+
+                memory_text = memory.get(
+                    "text",
+                    "",
+                )
 
                 memory_sections.append(
                     f"""
 [Memory {index}]
-Type: {
-    memory.get("metadata", {}).get(
-        "type",
-        "unknown",
-    )
-}
-Importance: {
-    memory.get("metadata", {}).get(
-        "importance",
-        0.0,
-    )
-}
-Relevance Score: {memory["score"]:.4f}
+Memory ID: {memory_id}
+Type: {memory_type}
+Importance: {importance}
+Created At: {created_at}
+Relevance Score: {relevance_score:.4f}
+Ranking Score: {ranking_score:.4f}
+Temporal Filter: {temporal_filter}
 
-{memory["text"]}
+{memory_text}
 """.strip()
                 )
 
@@ -91,15 +126,9 @@ Relevance Score: {memory["score"]:.4f}
             return {
                 "memory_results": [],
                 "memory_context": "",
-                "error": (
-                    f"Memory recall failed: {exc}"
-                ),
+                "error": f"Memory recall failed: {exc}",
                 "current_step": "memory_recall_complete",
             }
-
-    # ==================================================
-    # MEMORY WRITE
-    # ==================================================
 
     def write(
         self,
@@ -117,40 +146,28 @@ Relevance Score: {memory["score"]:.4f}
         ).strip()
 
         if not query or not final_answer:
-
             return {
                 "memory_written": False,
+                "memory_count": 0,
                 "current_step": "memory_write_complete",
             }
 
         try:
-
-            # ------------------------------------------
-            # 1. Always preserve raw conversation history
-            # ------------------------------------------
-
+            # Preserve complete conversation history.
             self.memory_manager.remember(
                 user_message=query,
                 assistant_message=final_answer,
             )
 
-            # ------------------------------------------
-            # 2. Extract important semantic memories
-            # ------------------------------------------
-
+            # Extract only useful long-term memories.
             extracted_memories = self.extractor.extract(
                 user_message=query,
                 assistant_message=final_answer,
             )
 
-            # ------------------------------------------
-            # 3. Store only useful semantic memories
-            # ------------------------------------------
-
             stored_count = 0
 
             for memory in extracted_memories:
-
                 self.semantic_store.add(
                     text=memory["text"],
                     metadata=memory["metadata"],
@@ -169,14 +186,12 @@ Relevance Score: {memory["score"]:.4f}
             return {
                 "memory_written": False,
                 "memory_count": 0,
-                "error": (
-                    f"Memory write failed: {exc}"
-                ),
+                "error": f"Memory write failed: {exc}",
                 "current_step": "memory_write_complete",
             }
 
     def close(self):
         """
-        Release resources if required in the future.
+        Reserved for future memory resources.
         """
         pass
