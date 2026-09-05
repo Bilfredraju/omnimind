@@ -1,4 +1,3 @@
-import json
 import re
 
 from models.llm.groq_provider import GroqProvider
@@ -6,7 +5,13 @@ from agents.state import AgentState
 
 
 class PlannerAgent:
-    """Create an execution plan and route for a user query."""
+    """Create an execution plan and route for a user query.
+
+    Phase 17.2:
+    The planner is memory-aware. Previously retrieved semantic and
+    temporal memory can influence the execution plan while the
+    deterministic routing rules remain unchanged.
+    """
 
     def __init__(self):
         self.llm = GroqProvider()
@@ -36,9 +41,6 @@ class PlannerAgent:
 
         # --------------------------------------------------
         # BOTH
-        # --------------------------------------------------
-        # The user wants information from the document AND
-        # recent/current/external information.
         # --------------------------------------------------
 
         both_patterns = [
@@ -74,8 +76,6 @@ class PlannerAgent:
         # --------------------------------------------------
         # RESEARCH
         # --------------------------------------------------
-        # Explicit request for current/external information.
-        # --------------------------------------------------
 
         research_keywords = [
             "latest",
@@ -97,8 +97,6 @@ class PlannerAgent:
 
         # --------------------------------------------------
         # RAG
-        # --------------------------------------------------
-        # Explicit document-related questions.
         # --------------------------------------------------
 
         document_keywords = [
@@ -127,11 +125,119 @@ class PlannerAgent:
         # --------------------------------------------------
         # DEFAULT → RAG
         # --------------------------------------------------
-        # If the user did not explicitly request external
-        # or current information, use the uploaded documents.
-        # --------------------------------------------------
 
         return "rag"
+
+    # ======================================================
+    # Memory Helpers
+    # ======================================================
+
+    def _get_memory_evidence(
+        self,
+        state: AgentState,
+    ) -> dict:
+        """
+        Extract memory evidence from AgentState.
+
+        The planner receives memory from the memory-recall
+        stage. We keep semantic and temporal memory separate
+        so that historical decisions are not confused with
+        current knowledge.
+        """
+
+        semantic_results = state.get(
+            "memory_results",
+            [],
+        ) or []
+
+        temporal_results = state.get(
+            "temporal_memory_results",
+            [],
+        ) or []
+
+        semantic_context = state.get(
+            "memory_context",
+            "",
+        ) or ""
+
+        temporal_context = state.get(
+            "temporal_memory_context",
+            "",
+        ) or ""
+
+        temporal_intent = state.get(
+            "temporal_intent",
+            {},
+        ) or {}
+
+        return {
+            "semantic_results": semantic_results,
+            "temporal_results": temporal_results,
+            "semantic_context": semantic_context,
+            "temporal_context": temporal_context,
+            "temporal_intent": temporal_intent,
+        }
+
+    def _memory_is_relevant(
+        self,
+        evidence: dict,
+    ) -> bool:
+        """
+        Determine whether retrieved memory contains usable
+        planning context.
+        """
+
+        if evidence["semantic_results"]:
+            return True
+
+        if evidence["temporal_results"]:
+            return True
+
+        if evidence["semantic_context"].strip():
+            return True
+
+        if evidence["temporal_context"].strip():
+            return True
+
+        return False
+
+    def _memory_summary(
+        self,
+        evidence: dict,
+    ) -> str:
+        """
+        Build a compact memory summary for planning.
+
+        This is intentionally deterministic. The planner does
+        not ask the LLM to interpret memory before routing.
+        """
+
+        sections = []
+
+        if evidence["semantic_context"].strip():
+            sections.append(
+                "Semantic memory:\n"
+                + evidence["semantic_context"].strip()
+            )
+
+        if evidence["temporal_context"].strip():
+            sections.append(
+                "Temporal memory:\n"
+                + evidence["temporal_context"].strip()
+            )
+
+        if evidence["temporal_intent"]:
+            temporal_expression = evidence[
+                "temporal_intent"
+            ].get("expression")
+
+            if temporal_expression:
+                sections.append(
+                    "Temporal intent: "
+                    + str(temporal_expression)
+                )
+
+        return "\n\n".join(sections)
 
     # ======================================================
     # Create Plan
@@ -140,36 +246,93 @@ class PlannerAgent:
     def _create_steps(
         self,
         route: str,
+        memory_evidence: dict | None = None,
     ) -> list[str]:
-        """Create execution steps for the selected route."""
+        """
+        Create execution steps for the selected route.
+
+        Memory-aware planning adds a memory/context step when
+        relevant memory was successfully retrieved.
+        """
+
+        memory_evidence = memory_evidence or {}
+
+        memory_relevant = self._memory_is_relevant(
+            memory_evidence
+        )
+
+        steps = []
+
+        # --------------------------------------------------
+        # Memory-aware planning step
+        # --------------------------------------------------
+
+        if memory_relevant:
+            temporal_results = memory_evidence.get(
+                "temporal_results",
+                [],
+            ) or []
+
+            temporal_intent = memory_evidence.get(
+                "temporal_intent",
+                {},
+            ) or {}
+
+            if temporal_results or temporal_intent:
+                steps.append(
+                    "Use relevant temporal memory and historical "
+                    "context when planning the response."
+                )
+            else:
+                steps.append(
+                    "Use relevant remembered context when "
+                    "planning the response."
+                )
+
+        # --------------------------------------------------
+        # Route-specific steps
+        # --------------------------------------------------
 
         if route == "rag":
-            return [
+            steps.extend(
+                [
+                    "Search the uploaded documents for relevant information.",
+                    "Analyze the retrieved information.",
+                    "Generate the final answer.",
+                ]
+            )
+            return steps
+
+        if route == "research":
+            steps.extend(
+                [
+                    "Perform external web research.",
+                    "Analyze the retrieved information.",
+                    "Generate the final answer.",
+                ]
+            )
+            return steps
+
+        if route == "both":
+            steps.extend(
+                [
+                    "Retrieve relevant information from the uploaded documents.",
+                    "Perform external web research.",
+                    "Analyze and compare both evidence sources.",
+                    "Generate the final answer.",
+                ]
+            )
+            return steps
+
+        steps.extend(
+            [
                 "Search the uploaded documents for relevant information.",
                 "Analyze the retrieved information.",
                 "Generate the final answer.",
             ]
+        )
 
-        if route == "research":
-            return [
-                "Perform external web research.",
-                "Analyze the retrieved information.",
-                "Generate the final answer.",
-            ]
-
-        if route == "both":
-            return [
-                "Retrieve relevant information from the uploaded documents.",
-                "Perform external web research.",
-                "Analyze and compare both evidence sources.",
-                "Generate the final answer.",
-            ]
-
-        return [
-            "Search the uploaded documents for relevant information.",
-            "Analyze the retrieved information.",
-            "Generate the final answer.",
-        ]
+        return steps
 
     # ======================================================
     # Planner
@@ -181,31 +344,50 @@ class PlannerAgent:
     ) -> AgentState:
         """
         Analyze the user query and determine the execution
-        route and plan.
+        route and memory-aware execution plan.
+
+        Phase 17.2:
+            Memory is available to the planner before the
+            downstream RAG/research stages.
         """
 
         query = state["query"]
 
         # --------------------------------------------------
-        # First: deterministic routing
+        # Retrieve memory already placed into state
+        # --------------------------------------------------
+
+        memory_evidence = self._get_memory_evidence(
+            state
+        )
+
+        # --------------------------------------------------
+        # Deterministic routing remains unchanged
         # --------------------------------------------------
 
         route = self._rule_based_route(
             query
         )
 
+        # --------------------------------------------------
+        # Create memory-aware plan
+        # --------------------------------------------------
+
         steps = self._create_steps(
-            route
+            route=route,
+            memory_evidence=memory_evidence,
         )
 
         # --------------------------------------------------
-        # Return deterministic result
+        # Store planning context
         # --------------------------------------------------
-        #
-        # We intentionally do not ask the LLM to choose the
-        # route when the routing rules already determine it.
-        #
-        # This prevents inconsistent routing between runs.
+
+        memory_summary = self._memory_summary(
+            memory_evidence
+        )
+
+        # --------------------------------------------------
+        # Return updated state
         # --------------------------------------------------
 
         return {
@@ -213,4 +395,5 @@ class PlannerAgent:
             "plan": steps,
             "route": route,
             "current_step": "planning_complete",
+            "planning_memory_context": memory_summary,
         }

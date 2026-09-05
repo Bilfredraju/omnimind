@@ -18,6 +18,9 @@ class AgentState(TypedDict, total=False):
     current_step: str
     route: str
 
+    # Memory context available to the planner
+    planning_memory_context: str
+
     # ------------------------------------------------------------------
     # Memory
     # ------------------------------------------------------------------
