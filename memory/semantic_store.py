@@ -8,6 +8,7 @@ from typing import Any
 
 from dateutil.parser import isoparse
 
+from memory.contradiction import MemoryContradictionEngine
 from memory.deduplication import MemoryDeduplicationEngine
 from memory.importance import MemoryImportanceEngine
 from memory.time_parser import MemoryTimeParser
@@ -26,6 +27,7 @@ class SemanticMemoryStore:
     - Temporal filtering
     - Semantic deduplication
     - Memory versioning / updates
+    - Contradiction detection
     - Stable memory IDs
     """
 
@@ -34,13 +36,16 @@ class SemanticMemoryStore:
         path: str = "data/memory/semantic_memories.json",
     ):
         self.path = Path(path)
+
         self.path.parent.mkdir(
             parents=True,
             exist_ok=True,
         )
 
         self.embedder = EmbeddingModel()
+
         self.time_parser = MemoryTimeParser()
+
         self.importance_engine = MemoryImportanceEngine()
 
         self.deduplication_engine = MemoryDeduplicationEngine(
@@ -48,6 +53,8 @@ class SemanticMemoryStore:
         )
 
         self.update_engine = MemoryUpdateEngine()
+
+        self.contradiction_engine = MemoryContradictionEngine()
 
         self.memories: list[dict[str, Any]] = []
 
@@ -70,7 +77,10 @@ class SemanticMemoryStore:
             ) as f:
                 self.memories = json.load(f)
 
-        except (json.JSONDecodeError, OSError):
+        except (
+            json.JSONDecodeError,
+            OSError,
+        ):
             self.memories = []
 
     def _save(self):
@@ -87,7 +97,7 @@ class SemanticMemoryStore:
             )
 
     # ------------------------------------------------------------------
-    # Memory helpers
+    # Metadata
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -95,9 +105,6 @@ class SemanticMemoryStore:
         text: str,
         metadata: dict[str, Any],
     ) -> dict[str, Any]:
-        """
-        Build safe default metadata for a memory.
-        """
 
         metadata.setdefault(
             "memory_id",
@@ -127,6 +134,58 @@ class SemanticMemoryStore:
         return metadata
 
     # ------------------------------------------------------------------
+    # Contradiction detection
+    # ------------------------------------------------------------------
+
+    def _detect_contradiction(
+        self,
+        text: str,
+        metadata: dict[str, Any],
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+
+        best_result = {
+            "contradiction": False,
+            "contradiction_with": None,
+            "contradiction_confidence": 0.0,
+            "contradiction_reason": None,
+        }
+
+        for existing in candidates:
+
+            result = self.contradiction_engine.detect(
+                new_text=text,
+                existing_memory=existing,
+            )
+
+            if not result.get("contradiction"):
+                continue
+
+            confidence = float(
+                result.get(
+                    "confidence",
+                    0.0,
+                )
+            )
+
+            if confidence > best_result[
+                "contradiction_confidence"
+            ]:
+
+                best_result = {
+                    "contradiction": True,
+                    "contradiction_with": existing.get(
+                        "memory_id"
+                    ),
+                    "contradiction_confidence": confidence,
+                    "contradiction_reason": result.get(
+                        "reason"
+                    ),
+                }
+
+        return best_result
+
+    # ------------------------------------------------------------------
     # Add memory
     # ------------------------------------------------------------------
 
@@ -135,15 +194,13 @@ class SemanticMemoryStore:
         text: str,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """
-        Add a memory while handling:
 
-        1. Embedding generation
-        2. Importance scoring
-        3. Semantic duplicates
-        4. Explicit memory updates
-        5. Historical versioning
-        """
+        if not text or not text.strip():
+            raise ValueError(
+                "Memory text cannot be empty."
+            )
+
+        text = text.strip()
 
         metadata = dict(metadata or {})
 
@@ -151,10 +208,12 @@ class SemanticMemoryStore:
         # Generate embedding
         # --------------------------------------------------------------
 
-        embedding = self.embedder.encode_single(text)
+        embedding = self.embedder.encode_single(
+            text
+        )
 
         # --------------------------------------------------------------
-        # Prepare metadata
+        # Build metadata
         # --------------------------------------------------------------
 
         metadata = self._build_metadata(
@@ -174,7 +233,7 @@ class SemanticMemoryStore:
         metadata["importance"] = importance
 
         # --------------------------------------------------------------
-        # Find semantically similar existing memory
+        # Find semantic duplicate candidate
         # --------------------------------------------------------------
 
         duplicate = self.deduplication_engine.find_duplicate(
@@ -182,16 +241,16 @@ class SemanticMemoryStore:
             memories=self.memories,
         )
 
-        # --------------------------------------------------------------
-        # Case 1: Semantically similar memory exists
-        # --------------------------------------------------------------
+        # ==============================================================
+        # CASE 1: SEMANTICALLY SIMILAR MEMORY EXISTS
+        # ==============================================================
 
         if duplicate is not None:
 
             existing = duplicate["memory"]
 
             # ----------------------------------------------------------
-            # Check whether the new statement explicitly updates it.
+            # 1A. Explicit update
             # ----------------------------------------------------------
 
             if self.update_engine.is_update(
@@ -211,13 +270,17 @@ class SemanticMemoryStore:
                     existing_memory=existing,
                 )
 
-                self.memories.append(new_memory)
+                self.memories.append(
+                    new_memory
+                )
+
                 self._save()
 
                 return {
                     **new_memory,
                     "duplicate": False,
                     "updated": True,
+                    "contradiction": False,
                     "duplicate_of": None,
                     "old_memory_id": update_result[
                         "old_memory_id"
@@ -225,10 +288,104 @@ class SemanticMemoryStore:
                     "duplicate_similarity": duplicate[
                         "similarity"
                     ],
+                    "contradiction_with": None,
+                    "contradiction_confidence": 0.0,
+                    "contradiction_reason": None,
                 }
 
             # ----------------------------------------------------------
-            # Same semantic meaning = duplicate
+            # 1B. CONTRADICTION CHECK
+            #
+            # This MUST happen before returning duplicate.
+            #
+            # Example:
+            #
+            # Existing:
+            #   I decided to use Qdrant.
+            #
+            # New:
+            #   I decided to use PostgreSQL.
+            #
+            # These may have high semantic similarity, but they
+            # represent conflicting decisions.
+            # ----------------------------------------------------------
+
+            contradiction_result = (
+                self._detect_contradiction(
+                    text=text,
+                    metadata=metadata,
+                    candidates=[existing],
+                )
+            )
+
+            if contradiction_result["contradiction"]:
+
+                metadata["contradiction"] = True
+
+                metadata["contradicts_memory_id"] = (
+                    contradiction_result[
+                        "contradiction_with"
+                    ]
+                )
+
+                metadata["contradiction_confidence"] = (
+                    contradiction_result[
+                        "contradiction_confidence"
+                    ]
+                )
+
+                metadata["contradiction_reason"] = (
+                    contradiction_result[
+                        "contradiction_reason"
+                    ]
+                )
+
+                new_memory = {
+                    "memory_id": metadata["memory_id"],
+                    "text": text,
+                    "embedding": embedding,
+                    "metadata": metadata,
+                }
+
+                # IMPORTANT:
+                # Contradictions preserve both memories.
+                # The old memory remains current.
+
+                self.memories.append(
+                    new_memory
+                )
+
+                self._save()
+
+                return {
+                    **new_memory,
+                    "duplicate": False,
+                    "updated": False,
+                    "contradiction": True,
+                    "duplicate_of": None,
+                    "old_memory_id": None,
+                    "duplicate_similarity": duplicate[
+                        "similarity"
+                    ],
+                    "contradiction_with": (
+                        contradiction_result[
+                            "contradiction_with"
+                        ]
+                    ),
+                    "contradiction_confidence": (
+                        contradiction_result[
+                            "contradiction_confidence"
+                        ]
+                    ),
+                    "contradiction_reason": (
+                        contradiction_result[
+                            "contradiction_reason"
+                        ]
+                    ),
+                }
+
+            # ----------------------------------------------------------
+            # 1C. Genuine duplicate
             # ----------------------------------------------------------
 
             return {
@@ -249,6 +406,7 @@ class SemanticMemoryStore:
                 ),
                 "duplicate": True,
                 "updated": False,
+                "contradiction": False,
                 "duplicate_of": existing.get(
                     "memory_id"
                 ),
@@ -256,23 +414,17 @@ class SemanticMemoryStore:
                 "duplicate_similarity": duplicate[
                     "similarity"
                 ],
+                "contradiction_with": None,
+                "contradiction_confidence": 0.0,
+                "contradiction_reason": None,
             }
 
+        # ==============================================================
+        # CASE 2: NO SEMANTIC DUPLICATE
+        # ==============================================================
+
         # --------------------------------------------------------------
-        # Case 2: Semantically different memory
-        #
-        # An explicit update can still occur here.
-        #
-        # Example:
-        #
-        #   Existing:
-        #       I decided to use Qdrant.
-        #
-        #   New:
-        #       I changed my decision. I'll use PostgreSQL instead.
-        #
-        # These statements may not have enough semantic similarity
-        # to trigger the duplicate detector.
+        # 2A. Explicit update without semantic duplicate
         # --------------------------------------------------------------
 
         if self.update_engine.is_update(
@@ -284,13 +436,6 @@ class SemanticMemoryStore:
             },
         ):
 
-            # ----------------------------------------------------------
-            # Find current memories with the same memory type.
-            #
-            # This prevents an update to a decision from accidentally
-            # superseding an unrelated preference, goal, etc.
-            # ----------------------------------------------------------
-
             current_memories = [
                 memory
                 for memory in self.memories
@@ -298,41 +443,28 @@ class SemanticMemoryStore:
                     memory.get(
                         "metadata",
                         {},
-                    ).get(
-                        "status",
-                        "current",
-                    )
+                    ).get("status")
                     == "current"
-                )
-                and (
-                    memory.get(
+                    and memory.get(
                         "metadata",
                         {},
-                    ).get(
-                        "type"
-                    )
-                    == metadata.get(
-                        "type"
-                    )
+                    ).get("type")
+                    == metadata.get("type")
                 )
             ]
 
-            # ----------------------------------------------------------
-            # Select the most recent current memory.
-            # ----------------------------------------------------------
+            current_memories.sort(
+                key=lambda memory: memory.get(
+                    "metadata",
+                    {},
+                ).get(
+                    "created_at",
+                    "",
+                ),
+                reverse=True,
+            )
 
             if current_memories:
-
-                current_memories.sort(
-                    key=lambda memory: memory.get(
-                        "metadata",
-                        {},
-                    ).get(
-                        "created_at",
-                        "",
-                    ),
-                    reverse=True,
-                )
 
                 existing = current_memories[0]
 
@@ -348,23 +480,101 @@ class SemanticMemoryStore:
                     existing_memory=existing,
                 )
 
-                self.memories.append(new_memory)
+                self.memories.append(
+                    new_memory
+                )
+
                 self._save()
 
                 return {
                     **new_memory,
                     "duplicate": False,
                     "updated": True,
+                    "contradiction": False,
                     "duplicate_of": None,
                     "old_memory_id": update_result[
                         "old_memory_id"
                     ],
                     "duplicate_similarity": None,
+                    "contradiction_with": None,
+                    "contradiction_confidence": 0.0,
+                    "contradiction_reason": None,
                 }
 
-        # --------------------------------------------------------------
-        # Case 3: Completely new memory
-        # --------------------------------------------------------------
+        # ==============================================================
+        # CASE 3: CONTRADICTION CHECK
+        # ==============================================================
+
+        current_memories = [
+            memory
+            for memory in self.memories
+            if memory.get(
+                "metadata",
+                {},
+            ).get("status")
+            == "current"
+        ]
+
+        # Prefer memories with the same type.
+        same_type_memories = [
+            memory
+            for memory in current_memories
+            if memory.get(
+                "metadata",
+                {},
+            ).get("type")
+            == metadata.get("type")
+        ]
+
+        candidates = (
+            same_type_memories
+            if same_type_memories
+            else current_memories
+        )
+
+        contradiction_result = (
+            self._detect_contradiction(
+                text=text,
+                metadata=metadata,
+                candidates=candidates,
+            )
+        )
+
+        # ==============================================================
+        # CASE 4: STORE MEMORY
+        # ==============================================================
+
+        if contradiction_result["contradiction"]:
+
+            metadata["contradiction"] = True
+
+            metadata["contradicts_memory_id"] = (
+                contradiction_result[
+                    "contradiction_with"
+                ]
+            )
+
+            metadata["contradiction_confidence"] = (
+                contradiction_result[
+                    "contradiction_confidence"
+                ]
+            )
+
+            metadata["contradiction_reason"] = (
+                contradiction_result[
+                    "contradiction_reason"
+                ]
+            )
+
+        else:
+
+            metadata["contradiction"] = False
+
+            metadata["contradicts_memory_id"] = None
+
+            metadata["contradiction_confidence"] = 0.0
+
+            metadata["contradiction_reason"] = None
 
         memory = {
             "memory_id": metadata["memory_id"],
@@ -373,16 +583,31 @@ class SemanticMemoryStore:
             "metadata": metadata,
         }
 
-        self.memories.append(memory)
+        self.memories.append(
+            memory
+        )
+
         self._save()
 
         return {
             **memory,
             "duplicate": False,
             "updated": False,
+            "contradiction": contradiction_result[
+                "contradiction"
+            ],
             "duplicate_of": None,
             "old_memory_id": None,
             "duplicate_similarity": None,
+            "contradiction_with": contradiction_result[
+                "contradiction_with"
+            ],
+            "contradiction_confidence": contradiction_result[
+                "contradiction_confidence"
+            ],
+            "contradiction_reason": contradiction_result[
+                "contradiction_reason"
+            ],
         }
 
     # ------------------------------------------------------------------
@@ -402,7 +627,9 @@ class SemanticMemoryStore:
             now=now,
         )
 
-        query_embedding = self.embedder.encode_single(query)
+        query_embedding = self.embedder.encode_single(
+            query
+        )
 
         candidates = []
 
@@ -427,11 +654,13 @@ class SemanticMemoryStore:
                     continue
 
                 try:
+
                     memory_time = isoparse(
                         created_at
                     )
 
                     if memory_time.tzinfo is None:
+
                         memory_time = memory_time.replace(
                             tzinfo=timezone.utc
                         )
@@ -446,11 +675,13 @@ class SemanticMemoryStore:
                 end = temporal["end"]
 
                 if start.tzinfo is None:
+
                     start = start.replace(
                         tzinfo=timezone.utc
                     )
 
                 if end.tzinfo is None:
+
                     end = end.replace(
                         tzinfo=timezone.utc
                     )
@@ -523,10 +754,6 @@ class SemanticMemoryStore:
                     ),
                 }
             )
-
-        # --------------------------------------------------------------
-        # Highest combined score first
-        # --------------------------------------------------------------
 
         candidates.sort(
             key=lambda x: x["ranking_score"],
