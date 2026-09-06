@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+from typing import Any
 
 
 # ============================================================
-# PROJECT PATH
+# PROJECT ROOT
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -15,33 +16,18 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 # ============================================================
-# MCP
+# IMPORTS
 # ============================================================
 
 from mcp.server import MCPServer
-
-
-# ============================================================
-# RAG COMPONENTS
-# ============================================================
 
 from rag.embeddings.embedder import EmbeddingModel
 from rag.ingestion.loader import load_pdf
 from rag.ingestion.chunker import chunk_documents
 from rag.retrieval.bm25 import BM25Retriever
 from rag.retrieval.reranker import CrossEncoderReranker
+from rag.retrieval.citations import build_citation
 
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-PDF_PATH = (
-    PROJECT_ROOT
-    / "data"
-    / "raw"
-    / "sample.pdf"
-)
 
 DEFAULT_CHUNK_SIZE = 800
 DEFAULT_CHUNK_OVERLAP = 150
@@ -54,945 +40,584 @@ DEFAULT_RERANK_CANDIDATES = 10
 MAX_TOP_K = 10
 
 
-# ============================================================
-# MCP SERVER
-# ============================================================
-
-mcp = MCPServer(
-    "OmniMind Document Server"
-)
-
-
-# ============================================================
-# DOCUMENT KNOWLEDGE BASE
-# ============================================================
-
 class DocumentKnowledgeBase:
     """
-    In-memory document retrieval system for the
-    OmniMind Document MCP Server.
+    In-memory document knowledge base used by the MCP document server.
 
     Retrieval pipeline:
 
-        PDF
+        Document
           ↓
-        Chunking
+        Sentence-aware chunks
           ↓
-        Embeddings
+        Embeddings + BM25
           ↓
-        Semantic Search
-          +
-        BM25 Keyword Search
+        Hybrid RRF
           ↓
-        Reciprocal Rank Fusion
+        Cross-encoder reranking
           ↓
-        Cross-Encoder Reranking
-          ↓
-        Retrieved Evidence
-
-    The MCP server intentionally uses an in-memory
-    semantic index rather than opening the application's
-    persistent Qdrant database.
+        Citation-aware results
     """
 
     def __init__(
         self,
-        pdf_path: Path,
-    ):
-        self.pdf_path = pdf_path
+        file_path: str | Path,
+        *,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+        chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+        semantic_weight: float = DEFAULT_SEMANTIC_WEIGHT,
+        keyword_weight: float = DEFAULT_KEYWORD_WEIGHT,
+        rrf_k: int = DEFAULT_RRF_K,
+        rerank_candidates: int = DEFAULT_RERANK_CANDIDATES,
+    ) -> None:
+        self.file_path = Path(file_path).resolve()
 
-        # ----------------------------------------------------
-        # Validate PDF
-        # ----------------------------------------------------
-
-        if not self.pdf_path.exists():
+        if not self.file_path.exists():
             raise FileNotFoundError(
-                f"PDF not found: {self.pdf_path}"
+                f"Document not found: {self.file_path}"
             )
 
-        if not self.pdf_path.is_file():
+        if not self.file_path.is_file():
             raise ValueError(
-                f"PDF path is not a file: {self.pdf_path}"
+                f"Path is not a file: {self.file_path}"
             )
 
-        print(
-            f"Loading document: {self.pdf_path}",
-            flush=True,
-        )
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be greater than zero.")
 
-        # ----------------------------------------------------
-        # Load PDF
-        # ----------------------------------------------------
+        if chunk_overlap < 0:
+            raise ValueError("chunk_overlap cannot be negative.")
 
-        documents = load_pdf(
-            str(self.pdf_path)
-        )
+        if chunk_overlap >= chunk_size:
+            raise ValueError(
+                "chunk_overlap must be smaller than chunk_size."
+            )
 
-        # ----------------------------------------------------
-        # Chunk documents
-        # ----------------------------------------------------
+        if semantic_weight < 0:
+            raise ValueError("semantic_weight cannot be negative.")
+
+        if keyword_weight < 0:
+            raise ValueError("keyword_weight cannot be negative.")
+
+        if semantic_weight == 0 and keyword_weight == 0:
+            raise ValueError(
+                "At least one retrieval weight must be greater than zero."
+            )
+
+        if rrf_k <= 0:
+            raise ValueError("rrf_k must be greater than zero.")
+
+        if rerank_candidates <= 0:
+            raise ValueError(
+                "rerank_candidates must be greater than zero."
+            )
+
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+
+        self.semantic_weight = semantic_weight
+        self.keyword_weight = keyword_weight
+        self.rrf_k = rrf_k
+
+        self.rerank_candidates = rerank_candidates
+
+        # ---------------------------------------------------------
+        # Load document
+        # ---------------------------------------------------------
+        documents = load_pdf(str(self.file_path))
 
         self.chunks = chunk_documents(
             documents,
-            chunk_size=DEFAULT_CHUNK_SIZE,
-            chunk_overlap=DEFAULT_CHUNK_OVERLAP,
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
         )
 
-        print(
-            f"Loaded {len(self.chunks)} document chunks.",
-            flush=True,
-        )
-
-        # ----------------------------------------------------
+        # ---------------------------------------------------------
         # Embedding model
-        # ----------------------------------------------------
+        # ---------------------------------------------------------
+        self.embedding_model = EmbeddingModel()
 
-        print(
-            "Loading embedding model: "
-            "BAAI/bge-small-en-v1.5",
-            flush=True,
-        )
+        texts = [
+            chunk["text"]
+            for chunk in self.chunks
+        ]
 
-        self.embedder = EmbeddingModel()
+        if texts:
+            self.embeddings = self.embedding_model.encode(texts)
+        else:
+            self.embeddings = []
 
-        print(
-            "Embedding model loaded successfully.",
-            flush=True,
-        )
+        # ---------------------------------------------------------
+        # BM25
+        # ---------------------------------------------------------
+        self.bm25 = BM25Retriever(self.chunks)
 
-        # ----------------------------------------------------
-        # Create embeddings
-        # ----------------------------------------------------
-
-        print(
-            "Creating in-memory document embeddings...",
-            flush=True,
-        )
-
-        self.embeddings = self.embedder.encode(
-            [
-                chunk["text"]
-                for chunk in self.chunks
-            ]
-        )
-
-        print(
-            "Document embeddings created.",
-            flush=True,
-        )
-
-        # ----------------------------------------------------
-        # BM25 keyword retriever
-        # ----------------------------------------------------
-
-        self.bm25 = BM25Retriever(
-            self.chunks
-        )
-
-        # ----------------------------------------------------
-        # Cross-encoder reranker
-        # ----------------------------------------------------
-
-        print(
-            "Loading cross-encoder reranker...",
-            flush=True,
-        )
-
+        # ---------------------------------------------------------
+        # Cross encoder
+        # ---------------------------------------------------------
         self.reranker = CrossEncoderReranker()
 
-        print(
-            "Cross-encoder reranker loaded successfully.",
-            flush=True,
-        )
-
-    # ========================================================
-    # RESULT ID
-    # ========================================================
+    # =============================================================
+    # Utility helpers
+    # =============================================================
 
     @staticmethod
-    def _result_key(
-        result: dict,
-        fallback_index: int,
-    ) -> str:
-        """
-        Build a stable identifier for a retrieved chunk.
+    def _result_id(chunk: dict[str, Any], index: int) -> str:
+        metadata = chunk.get("metadata", {})
 
-        Prefer the deterministic chunk_id generated by the
-        ingestion pipeline.
-        """
+        if isinstance(metadata, dict):
+            chunk_id = metadata.get("chunk_id")
 
-        metadata = result.get(
-            "metadata",
-            {},
-        )
+            if chunk_id:
+                return str(chunk_id)
 
-        chunk_id = metadata.get(
-            "chunk_id"
-        )
+        chunk_id = chunk.get("chunk_id")
 
         if chunk_id:
             return str(chunk_id)
 
-        return (
-            f"{metadata.get('source', 'unknown')}:"
-            f"{metadata.get('page', 0)}:"
-            f"{metadata.get('chunk_index', fallback_index)}"
-        )
+        return f"chunk-{index}"
 
-    # ========================================================
-    # SEMANTIC SEARCH
-    # ========================================================
+    @staticmethod
+    def _metadata(result: dict[str, Any]) -> dict[str, Any]:
+        metadata = result.get("metadata")
+
+        if isinstance(metadata, dict):
+            return metadata
+
+        return {}
+
+    # =============================================================
+    # Semantic retrieval
+    # =============================================================
 
     def semantic_search(
         self,
         query: str,
-        top_k: int = 10,
-    ) -> list[dict]:
-        """
-        Search the in-memory document embeddings.
-
-        Embeddings from the current model are normalized,
-        therefore the dot product acts as cosine similarity.
-        """
-
-        if not query or not query.strip():
+        top_k: int = 5,
+    ) -> list[dict[str, Any]]:
+        if not query.strip():
             return []
 
         if not self.chunks:
             return []
 
-        top_k = max(
-            1,
-            min(
-                top_k,
-                len(self.chunks),
-            ),
-        )
+        query_embedding = self.embedding_model.encode_single(query)
 
-        query_embedding = (
-            self.embedder.encode_single(
-                query
-            )
-        )
+        scored: list[dict[str, Any]] = []
 
-        scored = []
-
-        # ----------------------------------------------------
-        # Calculate cosine-style similarity
-        # ----------------------------------------------------
-
-        for index, embedding in enumerate(
-            self.embeddings
-        ):
-            score = sum(
-                a * b
-                for a, b in zip(
-                    query_embedding,
-                    embedding,
+        for index, embedding in enumerate(self.embeddings):
+            score = float(
+                sum(
+                    a * b
+                    for a, b in zip(query_embedding, embedding)
                 )
             )
+
+            chunk = self.chunks[index]
 
             scored.append(
-                (
-                    float(score),
-                    index,
-                )
+                {
+                    "result_id": self._result_id(chunk, index),
+                    "score": score,
+                    "text": chunk["text"],
+                    "metadata": chunk.get("metadata", {}),
+                }
             )
 
-        # ----------------------------------------------------
-        # Highest score first
-        # ----------------------------------------------------
-
         scored.sort(
-            key=lambda item: (
-                item[0],
-                -item[1],
-            ),
+            key=lambda item: item["score"],
             reverse=True,
         )
 
-        results = []
+        results = scored[:top_k]
 
-        for rank, (
-            score,
-            index,
-        ) in enumerate(
-            scored[:top_k],
-            start=1,
-        ):
-            chunk = self.chunks[index]
-
-            result = {
-                "result_id": self._result_key(
-                    chunk,
-                    index,
-                ),
-                "score": score,
-                "text": chunk["text"],
-                "metadata": chunk["metadata"],
-                "semantic_rank": rank,
-            }
-
-            results.append(result)
+        for rank, result in enumerate(results, start=1):
+            result["semantic_rank"] = rank
 
         return results
 
-    # ========================================================
-    # HYBRID SEARCH
-    # ========================================================
+    # =============================================================
+    # Hybrid RRF retrieval
+    # =============================================================
 
     def hybrid_search(
         self,
         query: str,
-        top_k: int = 10,
-    ) -> list[dict]:
-        """
-        Combine semantic and BM25 retrieval using
-        Reciprocal Rank Fusion (RRF).
-
-        RRF avoids directly comparing raw semantic and
-        BM25 scores because those scores use different
-        scales.
-
-        A chunk appearing in both retrieval systems receives
-        evidence from both signals.
-        """
-
-        if not query or not query.strip():
+        top_k: int = 5,
+    ) -> list[dict[str, Any]]:
+        if not query.strip():
             return []
 
         if not self.chunks:
             return []
 
-        # ----------------------------------------------------
-        # Candidate pool
-        # ----------------------------------------------------
-
-        candidate_k = max(
-            top_k * 5,
-            20,
-        )
-
         candidate_k = min(
-            candidate_k,
             len(self.chunks),
+            max(top_k * 5, 20),
         )
 
-        # ----------------------------------------------------
-        # Semantic retrieval
-        # ----------------------------------------------------
-
-        semantic_results = (
-            self.semantic_search(
-                query=query,
-                top_k=candidate_k,
-            )
+        semantic_results = self.semantic_search(
+            query,
+            top_k=candidate_k,
         )
 
-        # ----------------------------------------------------
-        # BM25 retrieval
-        # ----------------------------------------------------
-
-        keyword_results = (
-            self.bm25.search(
-                query=query,
-                top_k=candidate_k,
-            )
+        keyword_results = self.bm25.search(
+            query,
+            top_k=candidate_k,
         )
 
-        combined: dict[str, dict] = {}
+        merged: dict[str, dict[str, Any]] = {}
 
-        # ----------------------------------------------------
-        # Add semantic rankings
-        # ----------------------------------------------------
-
+        # ---------------------------------------------------------
+        # Semantic candidates
+        # ---------------------------------------------------------
         for rank, result in enumerate(
             semantic_results,
             start=1,
         ):
-            key = self._result_key(
-                result,
-                rank,
-            )
+            result_id = result["result_id"]
 
-            entry = combined.setdefault(
-                key,
-                {
-                    "result_id": key,
-                    "text": result.get(
-                        "text",
-                        "",
-                    ),
-                    "metadata": result.get(
-                        "metadata",
-                        {},
-                    ),
-                    "semantic_score": 0.0,
-                    "keyword_score": 0.0,
+            if result_id not in merged:
+                merged[result_id] = {
+                    "result_id": result_id,
+                    "text": result["text"],
+                    "metadata": result["metadata"],
+                    "semantic_score": None,
+                    "keyword_score": None,
                     "semantic_rank": None,
                     "keyword_rank": None,
-                    "semantic_rrf_score": 0.0,
-                    "keyword_rrf_score": 0.0,
                     "retrieval_sources": [],
-                },
-            )
+                }
 
-            entry["semantic_score"] = float(
-                result.get(
-                    "score",
-                    0.0,
-                )
-            )
+            merged[result_id]["semantic_score"] = result["score"]
+            merged[result_id]["semantic_rank"] = rank
 
-            entry["semantic_rank"] = rank
-
-            entry["semantic_rrf_score"] = (
-                DEFAULT_SEMANTIC_WEIGHT
-                / (
-                    DEFAULT_RRF_K
-                    + rank
-                )
-            )
-
-            if "semantic" not in entry[
-                "retrieval_sources"
-            ]:
-                entry[
-                    "retrieval_sources"
-                ].append(
+            if "semantic" not in merged[result_id]["retrieval_sources"]:
+                merged[result_id]["retrieval_sources"].append(
                     "semantic"
                 )
 
-        # ----------------------------------------------------
-        # Add BM25 rankings
-        # ----------------------------------------------------
-
+        # ---------------------------------------------------------
+        # BM25 candidates
+        # ---------------------------------------------------------
         for rank, result in enumerate(
             keyword_results,
             start=1,
         ):
-            key = self._result_key(
-                result,
-                rank,
-            )
+            result_id = result["result_id"]
 
-            entry = combined.setdefault(
-                key,
-                {
-                    "result_id": key,
-                    "text": result.get(
-                        "text",
-                        "",
-                    ),
-                    "metadata": result.get(
-                        "metadata",
-                        {},
-                    ),
-                    "semantic_score": 0.0,
-                    "keyword_score": 0.0,
+            if result_id not in merged:
+                merged[result_id] = {
+                    "result_id": result_id,
+                    "text": result["text"],
+                    "metadata": result["metadata"],
+                    "semantic_score": None,
+                    "keyword_score": None,
                     "semantic_rank": None,
                     "keyword_rank": None,
-                    "semantic_rrf_score": 0.0,
-                    "keyword_rrf_score": 0.0,
                     "retrieval_sources": [],
-                },
+                }
+
+            merged[result_id]["keyword_score"] = result.get(
+                "bm25_score",
+                result.get("score"),
             )
 
-            entry["keyword_score"] = float(
-                result.get(
-                    "normalized_score",
-                    result.get(
-                        "score",
-                        0.0,
-                    ),
-                )
-            )
+            merged[result_id]["keyword_rank"] = rank
 
-            entry["keyword_rank"] = rank
-
-            entry["keyword_rrf_score"] = (
-                DEFAULT_KEYWORD_WEIGHT
-                / (
-                    DEFAULT_RRF_K
-                    + rank
-                )
-            )
-
-            if "bm25" not in entry[
-                "retrieval_sources"
-            ]:
-                entry[
-                    "retrieval_sources"
-                ].append(
+            if "bm25" not in merged[result_id]["retrieval_sources"]:
+                merged[result_id]["retrieval_sources"].append(
                     "bm25"
                 )
 
-        # ----------------------------------------------------
-        # Calculate final RRF score
-        # ----------------------------------------------------
+        # ---------------------------------------------------------
+        # Reciprocal Rank Fusion
+        # ---------------------------------------------------------
+        for result in merged.values():
+            semantic_rank = result["semantic_rank"]
+            keyword_rank = result["keyword_rank"]
 
-        results = []
+            semantic_rrf = (
+                self.semantic_weight
+                / (self.rrf_k + semantic_rank)
+                if semantic_rank is not None
+                else 0.0
+            )
 
-        for result in combined.values():
+            keyword_rrf = (
+                self.keyword_weight
+                / (self.rrf_k + keyword_rank)
+                if keyword_rank is not None
+                else 0.0
+            )
 
+            result["semantic_rrf_score"] = semantic_rrf
+            result["keyword_rrf_score"] = keyword_rrf
             result["hybrid_score"] = (
-                result[
-                    "semantic_rrf_score"
-                ]
-                + result[
-                    "keyword_rrf_score"
-                ]
+                semantic_rrf + keyword_rrf
+            )
+            result["retrieval_source_count"] = len(
+                result["retrieval_sources"]
             )
 
-            result[
-                "retrieval_source_count"
-            ] = len(
-                result[
-                    "retrieval_sources"
-                ]
-            )
-
-            results.append(result)
-
-        # ----------------------------------------------------
-        # Sort
-        #
-        # Priority:
-        #   1. RRF score
-        #   2. Results appearing in both systems
-        #   3. Better semantic rank
-        # ----------------------------------------------------
+        results = list(merged.values())
 
         results.sort(
             key=lambda item: (
                 item["hybrid_score"],
-                item[
-                    "retrieval_source_count"
-                ],
+                item["retrieval_source_count"],
                 -(
                     item["semantic_rank"]
-                    or 10**9
+                    if item["semantic_rank"] is not None
+                    else 10**9
                 ),
             ),
             reverse=True,
         )
 
-        return results[:top_k]
+        return results[:candidate_k]
 
-    # ========================================================
-    # FULL RETRIEVAL PIPELINE
-    # ========================================================
+    # =============================================================
+    # Citation-aware final retrieval
+    # =============================================================
 
     def search(
         self,
         query: str,
         top_k: int = 5,
-    ) -> list[dict]:
-        """
-        Execute the complete document retrieval pipeline:
-
-            Hybrid RRF retrieval
-                    ↓
-            Cross-encoder reranking
-                    ↓
-            Final evidence
-        """
-
-        if not query or not query.strip():
+    ) -> list[dict[str, Any]]:
+        if not query.strip():
             return []
 
-        if not self.chunks:
-            return []
-
-        top_k = max(
-            1,
-            min(
-                top_k,
-                MAX_TOP_K,
-            ),
+        top_k = min(
+            max(1, top_k),
+            MAX_TOP_K,
         )
 
-        # ----------------------------------------------------
-        # Hybrid retrieval
-        # ----------------------------------------------------
-
-        candidates = (
-            self.hybrid_search(
-                query=query,
-                top_k=max(
-                    DEFAULT_RERANK_CANDIDATES,
-                    top_k,
-                ),
-            )
+        candidates = self.hybrid_search(
+            query,
+            top_k=top_k,
         )
 
         if not candidates:
             return []
 
-        # ----------------------------------------------------
-        # Cross-encoder reranking
-        # ----------------------------------------------------
-
-        reranked = (
-            self.reranker.rerank(
-                query=query,
-                documents=candidates,
-                top_k=top_k,
-            )
+        rerank_k = min(
+            len(candidates),
+            max(top_k, self.rerank_candidates),
         )
 
-        # ----------------------------------------------------
-        # Normalize output
-        # ----------------------------------------------------
+        rerank_candidates = candidates[:rerank_k]
 
-        results = []
+        reranked = self.reranker.rerank(
+            query,
+            rerank_candidates,
+        )
 
-        for result in reranked:
+        results: list[dict[str, Any]] = []
 
-            metadata = result.get(
-                "metadata",
-                {},
+        for rank, result in enumerate(
+            reranked[:top_k],
+            start=1,
+        ):
+            metadata = dict(
+                result.get("metadata", {})
             )
 
-            rerank_score = float(
-                result.get(
-                    "rerank_score",
-                    0.0,
-                )
-            )
+            enriched = {
+                "text": result["text"],
+                "score": result.get(
+                    "score",
+                    result.get("rerank_score"),
+                ),
+                "rerank_score": result.get(
+                    "rerank_score"
+                ),
+                "hybrid_score": result.get(
+                    "hybrid_score"
+                ),
+                "semantic_score": result.get(
+                    "semantic_score"
+                ),
+                "keyword_score": result.get(
+                    "keyword_score"
+                ),
+                "semantic_rank": result.get(
+                    "semantic_rank"
+                ),
+                "keyword_rank": result.get(
+                    "keyword_rank"
+                ),
+                "retrieval_sources": result.get(
+                    "retrieval_sources",
+                    [],
+                ),
+                "retrieval_source_count": result.get(
+                    "retrieval_source_count",
+                    0,
+                ),
+                "result_id": result.get(
+                    "result_id"
+                ),
+                "chunk_id": metadata.get(
+                    "chunk_id"
+                ),
+                "document_id": metadata.get(
+                    "document_id"
+                ),
+                "source": metadata.get(
+                    "source"
+                ),
+                "document_name": metadata.get(
+                    "document_name"
+                ),
+                "page": metadata.get(
+                    "page"
+                ),
+                "page_number": metadata.get(
+                    "page_number"
+                ),
+                "chunk": metadata.get(
+                    "chunk"
+                ),
+                "chunk_index": metadata.get(
+                    "chunk_index"
+                ),
+                "metadata": metadata,
+            }
 
-            results.append(
-                {
-                    "text": result.get(
-                        "text",
-                        "",
-                    ),
-                    "score": rerank_score,
-                    "rerank_score": rerank_score,
+            results.append(enriched)
 
-                    # Hybrid retrieval information
-                    "hybrid_score": float(
-                        result.get(
-                            "hybrid_score",
-                            0.0,
-                        )
-                    ),
-                    "semantic_score": float(
-                        result.get(
-                            "semantic_score",
-                            0.0,
-                        )
-                    ),
-                    "keyword_score": float(
-                        result.get(
-                            "keyword_score",
-                            0.0,
-                        )
-                    ),
-
-                    # Retrieval ranks
-                    "semantic_rank": result.get(
-                        "semantic_rank"
-                    ),
-                    "keyword_rank": result.get(
-                        "keyword_rank"
-                    ),
-
-                    # Retrieval sources
-                    "retrieval_sources": result.get(
-                        "retrieval_sources",
-                        [],
-                    ),
-                    "retrieval_source_count": result.get(
-                        "retrieval_source_count",
-                        0,
-                    ),
-
-                    # Stable identifiers
-                    "result_id": result.get(
-                        "result_id"
-                    ),
-                    "chunk_id": metadata.get(
-                        "chunk_id"
-                    ),
-                    "document_id": metadata.get(
-                        "document_id"
-                    ),
-
-                    # Citation metadata
-                    "source": metadata.get(
-                        "source",
-                        "Unknown",
-                    ),
-                    "document_name": metadata.get(
-                        "document_name",
-                        metadata.get(
-                            "source",
-                            "Unknown",
-                        ),
-                    ),
-                    "page": metadata.get(
-                        "page",
-                        "Unknown",
-                    ),
-                    "page_number": metadata.get(
-                        "page_number",
-                        metadata.get(
-                            "page",
-                            "Unknown",
-                        ),
-                    ),
-                    "chunk": metadata.get(
-                        "chunk_index",
-                        "Unknown",
-                    ),
-                    "chunk_index": metadata.get(
-                        "chunk_index",
-                        "Unknown",
-                    ),
-                }
+        # ---------------------------------------------------------
+        # Build structured citations
+        # ---------------------------------------------------------
+        for index, result in enumerate(
+            results,
+            start=1,
+        ):
+            result["citation"] = build_citation(
+                result,
+                index,
             )
 
         return results
 
-    # ========================================================
-    # RESOURCE CLEANUP
-    # ========================================================
+    # =============================================================
+    # Document information
+    # =============================================================
 
-    def close(self):
-        """
-        Release model resources where supported.
-        """
+    def get_document_info(self) -> dict[str, Any]:
+        return {
+            "file_path": str(self.file_path),
+            "document_name": self.file_path.name,
+            "chunk_count": len(self.chunks),
+            "chunk_size": self.chunk_size,
+            "chunk_overlap": self.chunk_overlap,
+            "chunking_strategy": "sentence_aware",
+            "semantic_weight": self.semantic_weight,
+            "keyword_weight": self.keyword_weight,
+            "fusion": "rrf",
+            "rrf_k": self.rrf_k,
+            "reranking": "cross_encoder",
+            "rerank_candidates": self.rerank_candidates,
+            "citations": True,
+        }
 
-        try:
-            self.reranker.close()
-        except AttributeError:
-            pass
 
-        try:
-            self.embedder.close()
-        except AttributeError:
-            pass
+# ================================================================
+# Global knowledge base
+# ================================================================
 
-
-# ============================================================
-# LAZY KNOWLEDGE BASE
-# ============================================================
-
-knowledge_base = None
+_KNOWLEDGE_BASE: DocumentKnowledgeBase | None = None
 
 
 def get_knowledge_base() -> DocumentKnowledgeBase:
-    """
-    Lazily initialize the document knowledge base.
+    global _KNOWLEDGE_BASE
 
-    Heavy ML models are loaded only when a document
-    search tool actually needs them.
-    """
-
-    global knowledge_base
-
-    if knowledge_base is None:
-
-        knowledge_base = DocumentKnowledgeBase(
-            pdf_path=PDF_PATH
+    if _KNOWLEDGE_BASE is None:
+        default_document = (
+        Path(__file__).resolve().parents[1]
+        / "data"
+        / "raw"
+        / "sample.pdf"
         )
 
-    return knowledge_base
 
-
-# ============================================================
-# MCP TOOL: DOCUMENT INFORMATION
-# ============================================================
-
-@mcp.tool()
-def get_document_info() -> dict:
-    """
-    Return metadata about the indexed document.
-    """
-
-    kb = get_knowledge_base()
-
-    try:
-        documents = load_pdf(
-            str(kb.pdf_path)
+        _KNOWLEDGE_BASE = DocumentKnowledgeBase(
+            default_document
         )
 
-        pages = len(documents)
-
-    except Exception:
-        pages = 0
-
-    return {
-        "document": kb.pdf_path.name,
-        "pages": pages,
-        "chunks": len(
-            kb.chunks
-        ),
-        "embedding_model": (
-            "BAAI/bge-small-en-v1.5"
-        ),
-        "chunking_strategy": (
-            "sentence_aware"
-        ),
-        "chunk_size": DEFAULT_CHUNK_SIZE,
-        "chunk_overlap": DEFAULT_CHUNK_OVERLAP,
-        "retrieval": (
-            "semantic + BM25 + "
-            "Reciprocal Rank Fusion"
-        ),
-        "semantic_weight": (
-            DEFAULT_SEMANTIC_WEIGHT
-        ),
-        "keyword_weight": (
-            DEFAULT_KEYWORD_WEIGHT
-        ),
-        "rrf_k": DEFAULT_RRF_K,
-        "reranker_model": (
-            "BAAI/bge-reranker-base"
-        ),
-        "vector_database": (
-            "Qdrant used by main RAG pipeline"
-        ),
-        "mcp_retrieval": (
-            "In-memory semantic + BM25 "
-            "with RRF fusion and "
-            "cross-encoder reranking"
-        ),
-        "status": "indexed",
-    }
+    return _KNOWLEDGE_BASE
 
 
-# ============================================================
-# MCP TOOL: DOCUMENT SEARCH
-# ============================================================
+# ================================================================
+# MCP server
+# ================================================================
 
-@mcp.tool()
+server = MCPServer(
+    name="document-server"
+)
+
+
+@server.tool()
 def search_documents(
     query: str,
     top_k: int = 5,
-) -> dict:
+) -> dict[str, Any]:
     """
-    Search the uploaded document using:
+    Search the document knowledge base.
 
-        Semantic retrieval
-            +
-        BM25 retrieval
-            ↓
-        RRF hybrid fusion
-            ↓
-        Cross-encoder reranking
-
-    Args:
-        query:
-            Natural-language question or search query.
-
-        top_k:
-            Number of final reranked results.
-            Maximum allowed value is 10.
+    Returns hybrid RRF + cross-encoder reranked
+    results with source attribution and citations.
     """
 
-    # --------------------------------------------------------
-    # Validate query
-    # --------------------------------------------------------
-
-    if not isinstance(
-        query,
-        str,
-    ):
-        return {
-            "query": "",
-            "results": [],
-            "count": 0,
-            "error": (
-                "Search query must be a string."
-            ),
-        }
+    if not isinstance(query, str):
+        raise TypeError("query must be a string.")
 
     query = query.strip()
 
     if not query:
+        raise ValueError("query cannot be empty.")
 
-        return {
-            "query": query,
-            "results": [],
-            "count": 0,
-            "error": (
-                "Search query cannot be empty."
-            ),
-        }
+    if not isinstance(top_k, int):
+        raise TypeError("top_k must be an integer.")
 
-    # --------------------------------------------------------
-    # Validate top_k
-    # --------------------------------------------------------
-
-    try:
-        top_k = int(top_k)
-    except (
-        TypeError,
-        ValueError,
-    ):
-
-        return {
-            "query": query,
-            "results": [],
-            "count": 0,
-            "error": (
-                "top_k must be an integer."
-            ),
-        }
-
-    top_k = max(
-        1,
-        min(
-            top_k,
-            MAX_TOP_K,
-        ),
-    )
-
-    try:
-
-        # ----------------------------------------------------
-        # Lazy-load knowledge base
-        # ----------------------------------------------------
-
-        kb = get_knowledge_base()
-
-        # ----------------------------------------------------
-        # Execute complete retrieval pipeline
-        # ----------------------------------------------------
-
-        results = kb.search(
-            query=query,
-            top_k=top_k,
+    if top_k < 1 or top_k > MAX_TOP_K:
+        raise ValueError(
+            f"top_k must be between 1 and {MAX_TOP_K}."
         )
 
-        return {
-            "query": query,
-            "results": results,
-            "count": len(results),
-            "retrieval": {
-                "semantic": True,
-                "bm25": True,
-                "fusion": "rrf",
-                "rrf_k": DEFAULT_RRF_K,
-                "reranking": "cross_encoder",
-            },
-        }
+    kb = get_knowledge_base()
 
-    except Exception as exc:
+    results = kb.search(
+        query,
+        top_k=top_k,
+    )
 
-        return {
-            "query": query,
-            "results": [],
-            "count": 0,
-            "error": str(exc),
-        }
+    return {
+        "query": query,
+        "results": results,
+        "retrieval": {
+            "semantic": True,
+            "bm25": True,
+            "fusion": "rrf",
+            "rrf_k": DEFAULT_RRF_K,
+            "reranking": "cross_encoder",
+            "citations": True,
+        },
+    }
 
 
-# ============================================================
-# SERVER ENTRY POINT
-# ============================================================
+@server.tool()
+def get_document_info() -> dict[str, Any]:
+    """
+    Return metadata about the loaded document
+    and retrieval configuration.
+    """
+
+    return get_knowledge_base().get_document_info()
+
 
 if __name__ == "__main__":
-    mcp.run()
+    server.run()

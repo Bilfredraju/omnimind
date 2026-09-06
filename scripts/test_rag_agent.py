@@ -109,6 +109,10 @@ print("\nCurrent Step:")
 print(
     updated_state["current_step"]
 )
+print("\nError:")
+print(
+    updated_state.get("error", "")
+)
 
 
 agent.close()
