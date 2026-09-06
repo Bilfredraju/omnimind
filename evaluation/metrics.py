@@ -976,3 +976,180 @@ def citation_quality(answer, source_records, expected_citation_ids=None):
         "citation_completeness": completeness,
         "citation_f1": f1,
         }
+# ============================================================================
+# ANSWER GROUNDING METRICS
+# ============================================================================
+
+
+def _normalize_grounding_text(text):
+    """
+    Normalize text for deterministic evidence matching.
+    """
+    if not text:
+        return ""
+
+    return " ".join(
+        str(text).lower().split()
+    )
+
+
+def evidence_utilization(answer, evidence_texts):
+    """
+    Measure whether retrieved evidence is represented in the final answer.
+
+    The metric checks how many evidence items have at least one meaningful
+    normalized text fragment appearing in the answer.
+
+    Returns:
+        float in [0, 1]
+    """
+    if not answer or not evidence_texts:
+        return 0.0
+
+    normalized_answer = _normalize_grounding_text(answer)
+
+    valid_evidence = [
+        _normalize_grounding_text(text)
+        for text in evidence_texts
+        if text
+    ]
+
+    if not valid_evidence:
+        return 0.0
+
+    utilized = 0
+
+    for evidence in valid_evidence:
+        # Use a sufficiently long fragment to avoid matching generic words.
+        words = evidence.split()
+
+        if len(words) >= 12:
+            fragment = " ".join(words[:12])
+        else:
+            fragment = evidence
+
+        if fragment and fragment in normalized_answer:
+            utilized += 1
+
+    return utilized / len(valid_evidence)
+
+
+def answer_grounding_score(answer, evidence_texts):
+    """
+    Estimate how strongly the final answer is grounded in retrieved evidence.
+
+    Uses token overlap between the answer and retrieved evidence.
+
+    Returns:
+        float in [0, 1]
+    """
+    if not answer or not evidence_texts:
+        return 0.0
+
+    answer_tokens = set(
+        _normalize_grounding_text(answer).split()
+    )
+
+    evidence_tokens = set()
+
+    for text in evidence_texts:
+        evidence_tokens.update(
+            _normalize_grounding_text(text).split()
+        )
+
+    if not answer_tokens:
+        return 0.0
+
+    overlap = answer_tokens.intersection(evidence_tokens)
+
+    return len(overlap) / len(answer_tokens)
+
+
+def citation_evidence_alignment(
+    answer,
+    source_records,
+    evidence_records,
+):
+    """
+    Measure whether document citations in the answer map to available
+    evidence records.
+
+    Each evidence record should contain a citation_id and text/evidence field.
+
+    Returns:
+        float in [0, 1]
+    """
+    citations = extract_document_citations(answer)
+
+    if not citations:
+        return 0.0
+
+    evidence_citation_ids = {
+        record.get("citation_id")
+        for record in evidence_records
+        if record.get("citation_id")
+    }
+
+    source_citation_ids = {
+        record.get("citation_id")
+        for record in source_records
+        if record.get("citation_id")
+    }
+
+    valid_ids = evidence_citation_ids.intersection(
+        source_citation_ids
+    )
+
+    aligned = sum(
+        1
+        for citation in citations
+        if citation in valid_ids
+    )
+
+    return aligned / len(citations)
+
+
+def grounding_quality(
+    answer,
+    source_records,
+    evidence_texts,
+    evidence_records=None,
+):
+    """
+    Compute a combined grounding-quality report.
+
+    Returns:
+        dict containing evidence utilization, answer grounding,
+        citation/evidence alignment, and overall grounding score.
+    """
+    if evidence_records is None:
+        evidence_records = source_records
+
+    utilization = evidence_utilization(
+        answer,
+        evidence_texts,
+    )
+
+    grounding = answer_grounding_score(
+        answer,
+        evidence_texts,
+    )
+
+    alignment = citation_evidence_alignment(
+        answer,
+        source_records,
+        evidence_records,
+    )
+
+    overall = (
+        utilization
+        + grounding
+        + alignment
+    ) / 3.0
+
+    return {
+        "evidence_utilization": utilization,
+        "answer_grounding": grounding,
+        "citation_evidence_alignment": alignment,
+        "grounding_score": overall,
+    }
