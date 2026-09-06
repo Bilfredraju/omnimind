@@ -832,3 +832,147 @@ def bounded_score(
             float(score),
         ),
     )
+
+
+
+# ============================================================================
+# CITATION QUALITY METRICS
+# ============================================================================
+
+def citation_precision(answer, available_citation_ids):
+    """
+    Measure the fraction of document citations in the answer that
+    correspond to available citation IDs.
+
+    Returns:
+        float in [0, 1]
+    """
+    detected = extract_document_citations(answer)
+
+    if not detected:
+        return 0.0
+
+    available = set(available_citation_ids)
+
+    valid = sum(
+        1 for citation in detected
+        if citation in available
+    )
+
+    return valid / len(detected)
+
+
+def citation_recall(answer, expected_citation_ids):
+    """
+    Measure the fraction of expected citation IDs that appear in
+    the final answer.
+
+    Returns:
+        float in [0, 1]
+    """
+    expected = set(expected_citation_ids)
+
+    if not expected:
+        return 1.0
+
+    detected = set(extract_document_citations(answer))
+
+    return len(detected & expected) / len(expected)
+
+
+def citation_correctness(answer, source_records):
+    """
+    Measure whether every document citation in the answer maps to
+    an actual source record.
+
+    Returns:
+        float in [0, 1]
+    """
+    detected = extract_document_citations(answer)
+
+    if not detected:
+        return 0.0
+
+    valid_ids = {
+        source.get("citation_id")
+        for source in source_records
+        if source.get("citation_id")
+    }
+
+    correct = sum(
+        1 for citation in detected
+        if citation in valid_ids
+    )
+
+    return correct / len(detected)
+
+
+def citation_completeness(answer, expected_citation_ids):
+    """
+    Measure how completely the answer cites the expected document
+    evidence.
+
+    This is equivalent to citation recall but is provided as a
+    semantic metric name for evaluation reports.
+
+    Returns:
+        float in [0, 1]
+    """
+    return citation_recall(
+        answer,
+        expected_citation_ids,
+    )
+
+
+def citation_quality(answer, source_records, expected_citation_ids=None):
+    """
+    Compute a combined citation-quality report.
+
+    Returns:
+        dict containing precision, recall, correctness,
+        completeness, and F1.
+    """
+    available_ids = {
+        source.get("citation_id")
+        for source in source_records
+        if source.get("citation_id")
+    }
+
+    precision = citation_precision(
+        answer,
+        available_ids,
+    )
+
+    correctness = citation_correctness(
+        answer,
+        source_records,
+    )
+
+    if expected_citation_ids is None:
+        expected_citation_ids = available_ids
+
+    recall = citation_recall(
+        answer,
+        expected_citation_ids,
+    )
+
+    completeness = citation_completeness(
+        answer,
+        expected_citation_ids,
+    )
+
+    if precision + recall == 0:
+        f1 = 0.0
+    else:
+        f1 = (
+            2 * precision * recall
+            / (precision + recall)
+        )
+
+    return {
+        "citation_precision": precision,
+        "citation_recall": recall,
+        "citation_correctness": correctness,
+        "citation_completeness": completeness,
+        "citation_f1": f1,
+        }
