@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from langgraph.graph import StateGraph, START, END
 
 from agents.state import AgentState
@@ -16,6 +18,22 @@ class OmniMindGraph:
     Phase 17.2:
     Memory is recalled BEFORE planning so previous semantic and
     temporal knowledge can influence the execution plan.
+
+    Phase 17.3:
+    Memory context is available to retrieval and downstream
+    reasoning without degrading external search queries.
+
+    Phase 17.4:
+    Analysis explicitly consumes semantic and temporal memory.
+
+    Phase 17.5:
+    Synthesis explicitly consumes semantic, temporal, RAG,
+    research, and analysis evidence.
+
+    Evaluation support:
+    An optional MemoryAgent can be injected so evaluation can
+    run against isolated benchmark memory without changing
+    production memory behavior.
 
     Routes:
 
@@ -54,15 +72,39 @@ class OmniMindGraph:
     reasoning and synthesis stages.
     """
 
-    def __init__(self, pdf_path: str):
-
+    def __init__(
+        self,
+        pdf_path: str,
+        memory_agent: MemoryAgent | None = None,
+    ):
         # --------------------------------------------------
         # Agents
         # --------------------------------------------------
 
         self.planner = PlannerAgent()
 
-        self.memory_agent = MemoryAgent()
+        # --------------------------------------------------
+        # Memory Agent
+        # --------------------------------------------------
+
+        # Production behavior remains unchanged:
+        #
+        #     OmniMindGraph(pdf_path=...)
+        #
+        # creates a normal MemoryAgent.
+        #
+        # Evaluation can inject an isolated MemoryAgent:
+        #
+        #     OmniMindGraph(
+        #         pdf_path=...,
+        #         memory_agent=benchmark_memory_agent,
+        #     )
+        #
+        self.memory_agent = (
+            memory_agent
+            if memory_agent is not None
+            else MemoryAgent()
+        )
 
         self.rag_agent = RAGAgent(
             pdf_path=pdf_path
@@ -122,10 +164,8 @@ class OmniMindGraph:
         # --------------------------------------------------
         # START -> Memory Recall
         # --------------------------------------------------
-        #
-        # Phase 17.2:
+
         # Memory must be available before planning.
-        # --------------------------------------------------
 
         graph.add_edge(
             START,
@@ -221,12 +261,11 @@ class OmniMindGraph:
         """
         Retrieve both semantic and temporal memory.
 
-        Phase 17.2:
         Memory is retrieved before the planner runs.
 
         All memory outputs are explicitly propagated into
-        LangGraph state so the planner, Analysis, and
-        Synthesis stages can use them.
+        LangGraph state so the planner, Analysis, and Synthesis
+        stages can use them.
         """
 
         result = self.memory_agent.recall(state)
@@ -279,8 +318,8 @@ class OmniMindGraph:
         """
         Run the memory-aware planner.
 
-        The planner now receives semantic and temporal memory
-        because Memory Recall executes before this node.
+        The planner receives semantic and temporal memory because
+        Memory Recall executes before this node.
         """
 
         result = self.planner.plan(state)
@@ -439,7 +478,7 @@ class OmniMindGraph:
         state: AgentState,
     ) -> AgentState:
         """
-        Analyze RAG, research, semantic memory and temporal
+        Analyze RAG, research, semantic memory, and temporal
         memory evidence.
         """
 

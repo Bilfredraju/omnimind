@@ -1,0 +1,547 @@
+{
+  "name": "OmniMind Memory Evaluation Dataset",
+  "version": "1.0",
+  "description": "Benchmark cases for semantic memory, temporal memory, planning, retrieval, reasoning, synthesis, and evidence handling.",
+  "cases": [
+    {
+      "id": "semantic_001",
+      "category": "semantic_memory",
+      "query": "What vector database did I decide to use for OmniMind?",
+      "memory": {
+        "relevant": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "I decided to use Qdrant as the vector database for my OmniMind project.",
+            "type": "decision"
+          }
+        ],
+        "irrelevant": []
+      },
+      "expected": {
+        "required_facts": [
+          "Qdrant"
+        ]
+      }
+    },
+    {
+      "id": "semantic_002",
+      "category": "semantic_memory",
+      "query": "What did I decide to use as the vector database?",
+      "memory": {
+        "relevant": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "I decided to use Qdrant as the vector database for my OmniMind project.",
+            "type": "decision"
+          }
+        ],
+        "irrelevant": [
+          {
+            "memory_id": "coffee-preference",
+            "text": "I prefer coffee without sugar.",
+            "type": "preference"
+          }
+        ]
+      },
+      "expected": {
+        "required_facts": [
+          "Qdrant"
+        ],
+        "irrelevant_facts": [
+          "coffee",
+          "sugar"
+        ]
+      }
+    },
+    {
+      "id": "temporal_001",
+      "category": "temporal_memory",
+      "query": "What did I decide about my project 3 months ago?",
+      "memory": {
+        "relevant": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "Qdrant was selected as the vector database.",
+            "status": "historical",
+            "time": "3 months ago"
+          }
+        ],
+        "current": [
+          {
+            "memory_id": "postgres-decision",
+            "text": "PostgreSQL is the current database decision.",
+            "status": "current"
+          }
+        ]
+      },
+      "expected": {
+        "historical_facts": [
+          "Qdrant"
+        ],
+        "current_facts": [
+          "PostgreSQL"
+        ]
+      }
+    },
+    {
+      "id": "temporal_002",
+      "category": "temporal_memory",
+      "query": "What is my current database decision?",
+      "memory": {
+        "historical": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "Qdrant was selected as the vector database.",
+            "status": "historical"
+          }
+        ],
+        "current": [
+          {
+            "memory_id": "postgres-decision",
+            "text": "PostgreSQL is the current database decision.",
+            "status": "current"
+          }
+        ]
+      },
+      "expected": {
+        "current_facts": [
+          "PostgreSQL"
+        ]
+      }
+    },
+    {
+      "id": "temporal_003",
+      "category": "temporal_memory",
+      "query": "What did I decide previously about the vector database?",
+      "memory": {
+        "historical": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "Qdrant was selected as the vector database.",
+            "status": "historical"
+          }
+        ],
+        "current": [
+          {
+            "memory_id": "postgres-decision",
+            "text": "PostgreSQL is the current database decision.",
+            "status": "current"
+          }
+        ]
+      },
+      "expected": {
+        "historical_facts": [
+          "Qdrant"
+        ]
+      }
+    },
+    {
+      "id": "temporal_004",
+      "category": "temporal_memory",
+      "query": "What is the latest decision about the vector database?",
+      "memory": {
+        "historical": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "Qdrant was selected as the vector database.",
+            "status": "historical"
+          }
+        ],
+        "current": [
+          {
+            "memory_id": "postgres-decision",
+            "text": "PostgreSQL is the current database decision.",
+            "status": "current"
+          }
+        ]
+      },
+      "expected": {
+        "current_facts": [
+          "PostgreSQL"
+        ]
+      }
+    },
+    {
+      "id": "contradiction_001",
+      "category": "contradiction_handling",
+      "query": "What happened to my vector database decision?",
+      "memory": {
+        "historical": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "I decided to use Qdrant as the vector database.",
+            "status": "historical"
+          }
+        ],
+        "current": [
+          {
+            "memory_id": "postgres-decision",
+            "text": "I changed the vector database decision to PostgreSQL.",
+            "status": "current"
+          }
+        ]
+      },
+      "expected": {
+        "required_facts": [
+          "Qdrant",
+          "PostgreSQL"
+        ],
+        "requires_change_explanation": true
+      }
+    },
+    {
+      "id": "relevance_001",
+      "category": "irrelevant_memory_rejection",
+      "query": "Which vector database did I choose?",
+      "memory": {
+        "relevant": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "I decided to use Qdrant as the vector database.",
+            "type": "decision"
+          }
+        ],
+        "irrelevant": [
+          {
+            "memory_id": "job-preference",
+            "text": "I prefer AI and machine learning engineering roles.",
+            "type": "preference"
+          },
+          {
+            "memory_id": "coffee-preference",
+            "text": "I prefer coffee without sugar.",
+            "type": "preference"
+          }
+        ]
+      },
+      "expected": {
+        "required_facts": [
+          "Qdrant"
+        ],
+        "irrelevant_facts": [
+          "coffee",
+          "machine learning engineering"
+        ]
+      }
+    },
+    {
+      "id": "analysis_001",
+      "category": "memory_aware_analysis",
+      "query": "What did I decide about my project 3 months ago?",
+      "memory": {
+        "historical": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "Qdrant was selected as the vector database.",
+            "status": "historical"
+          }
+        ],
+        "current": [
+          {
+            "memory_id": "postgres-decision",
+            "text": "PostgreSQL is the current database decision.",
+            "status": "current"
+          }
+        ]
+      },
+      "expected": {
+        "historical_facts": [
+          "Qdrant"
+        ],
+        "current_facts": [
+          "PostgreSQL"
+        ]
+      }
+    },
+    {
+      "id": "synthesis_001",
+      "category": "memory_aware_synthesis",
+      "query": "What did I decide about my project 3 months ago?",
+      "memory": {
+        "historical": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "Qdrant was selected as the vector database.",
+            "status": "historical"
+          }
+        ],
+        "current": [
+          {
+            "memory_id": "postgres-decision",
+            "text": "PostgreSQL is the current database decision.",
+            "status": "current"
+          }
+        ]
+      },
+      "expected": {
+        "historical_facts": [
+          "Qdrant"
+        ],
+        "preferred_answer": "historical"
+      }
+    },
+    {
+      "id": "synthesis_002",
+      "category": "memory_aware_synthesis",
+      "query": "What is my current vector database decision?",
+      "memory": {
+        "historical": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "Qdrant was selected as the vector database.",
+            "status": "historical"
+          }
+        ],
+        "current": [
+          {
+            "memory_id": "postgres-decision",
+            "text": "PostgreSQL is the current database decision.",
+            "status": "current"
+          }
+        ]
+      },
+      "expected": {
+        "current_facts": [
+          "PostgreSQL"
+        ],
+        "preferred_answer": "current"
+      }
+    },
+    {
+      "id": "citation_001",
+      "category": "citation_preservation",
+      "query": "What datasets were used to evaluate the RAG models?",
+      "evidence": {
+        "documents": [
+          {
+            "source": "sample.pdf",
+            "page": 19,
+            "text": "Natural Questions, TriviaQA, WebQuestions, CuratedTrec, Jeopardy Question Generation, MS-MARCO, FEVER-3-way, and FEVER-2-way."
+          }
+        ]
+      },
+      "expected": {
+        "required_facts": [
+          "Natural Questions",
+          "TriviaQA",
+          "WebQuestions",
+          "MS-MARCO"
+        ],
+        "expected_document_citations": 1
+      }
+    },
+    {
+      "id": "citation_002",
+      "category": "citation_preservation",
+      "query": "What are the latest developments in RAG?",
+      "evidence": {
+        "web": [
+          {
+            "title": "RAG Research Source",
+            "url": "https://example.com/rag",
+            "snippet": "Recent work explores hybrid retrieval, multimodal RAG, real-time retrieval, and more complex retrieval-generation workflows."
+          }
+        ]
+      },
+      "expected": {
+        "required_facts": [
+          "hybrid retrieval",
+          "multimodal RAG"
+        ],
+        "expected_web_citations": 1
+      }
+    },
+    {
+      "id": "comparison_001",
+      "category": "rag_research_comparison",
+      "query": "Compare the RAG approach in my document with recent developments in RAG.",
+      "evidence": {
+        "documents": [
+          {
+            "source": "sample.pdf",
+            "page": 2,
+            "text": "The document describes a retrieval-augmented generation architecture using a retriever and sequence-to-sequence generator."
+          }
+        ],
+        "web": [
+          {
+            "title": "Recent RAG Research",
+            "url": "https://example.com/recent-rag",
+            "snippet": "Recent RAG research explores hybrid retrieval, multimodal retrieval, temporal handling, and more complex retrieval workflows."
+          }
+        ]
+      },
+      "expected": {
+        "required_facts": [
+          "retrieval",
+          "generator",
+          "hybrid retrieval"
+        ],
+        "expected_document_citations": 1,
+        "expected_web_citations": 1
+      }
+    },
+    {
+      "id": "insufficient_001",
+      "category": "insufficient_evidence",
+      "query": "What was my favorite programming language in 2020?",
+      "memory": {
+        "relevant": [],
+        "irrelevant": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "I decided to use Qdrant as the vector database.",
+            "type": "decision"
+          }
+        ]
+      },
+      "expected": {
+        "should_indicate_insufficient_evidence": true
+      }
+    },
+    {
+      "id": "memory_document_001",
+      "category": "memory_document_reconciliation",
+      "query": "What database did I decide to use, according to my memory and project document?",
+      "memory": {
+        "relevant": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "I decided to use Qdrant as the vector database.",
+            "type": "decision"
+          }
+        ]
+      },
+      "evidence": {
+        "documents": [
+          {
+            "source": "sample.pdf",
+            "page": 2,
+            "text": "The project uses a retrieval system and vector database."
+          }
+        ]
+      },
+      "expected": {
+        "required_facts": [
+          "Qdrant"
+        ],
+        "expected_document_citations": 1
+      }
+    },
+    {
+      "id": "memory_temporal_001",
+      "category": "memory_temporal_reconciliation",
+      "query": "What did I previously choose, and what is the current choice?",
+      "memory": {
+        "historical": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "Previously, I chose Qdrant.",
+            "status": "historical"
+          }
+        ],
+        "current": [
+          {
+            "memory_id": "postgres-decision",
+            "text": "Currently, I use PostgreSQL.",
+            "status": "current"
+          }
+        ]
+      },
+      "expected": {
+        "historical_facts": [
+          "Qdrant"
+        ],
+        "current_facts": [
+          "PostgreSQL"
+        ],
+        "requires_change_explanation": true
+      }
+    },
+    {
+      "id": "memory_research_001",
+      "category": "memory_research_reconciliation",
+      "query": "What did I decide about my vector database, and what does recent research say about RAG retrieval?",
+      "memory": {
+        "relevant": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "I decided to use Qdrant as the vector database.",
+            "type": "decision"
+          }
+        ]
+      },
+      "evidence": {
+        "web": [
+          {
+            "title": "Recent RAG Research",
+            "url": "https://example.com/rag-research",
+            "snippet": "Recent RAG systems increasingly explore hybrid retrieval and temporal-aware retrieval."
+          }
+        ]
+      },
+      "expected": {
+        "required_facts": [
+          "Qdrant",
+          "hybrid retrieval"
+        ],
+        "expected_web_citations": 1
+      }
+    },
+    {
+      "id": "planning_001",
+      "category": "memory_aware_planning",
+      "query": "What did I decide about my project 3 months ago?",
+      "memory": {
+        "historical": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "Qdrant was selected as the vector database.",
+            "status": "historical"
+          }
+        ]
+      },
+      "expected": {
+        "requires_memory_aware_planning": true,
+        "required_facts": [
+          "Qdrant"
+        ]
+      }
+    },
+    {
+      "id": "relevance_002",
+      "category": "irrelevant_memory_rejection",
+      "query": "What vector database did I decide to use for my project?",
+      "memory": {
+        "relevant": [
+          {
+            "memory_id": "qdrant-decision",
+            "text": "I decided to use Qdrant as the vector database for my OmniMind project.",
+            "type": "decision"
+          }
+        ],
+        "irrelevant": [
+          {
+            "memory_id": "job-preference",
+            "text": "I prefer AI and machine learning engineering roles.",
+            "type": "preference"
+          },
+          {
+            "memory_id": "travel-preference",
+            "text": "I prefer travelling during winter.",
+            "type": "preference"
+          }
+        ]
+      },
+      "expected": {
+        "required_facts": [
+          "Qdrant"
+        ],
+        "irrelevant_facts": [
+          "machine learning engineering",
+          "winter"
+        ]
+      }
+    }
+  ]
+}
