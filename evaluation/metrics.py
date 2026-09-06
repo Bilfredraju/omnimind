@@ -539,27 +539,74 @@ def historical_current_separation(
 # CITATION METRICS
 # ============================================================
 
+# ============================================================
+# CITATION METRICS
+# ============================================================
+
 def extract_document_citations(
     answer: str,
 ) -> list[str]:
     """
-    Extract document citations in the expected format:
+    Extract document citations from an OmniMind answer.
 
-        [Source N, Page X]
+    Current citation format:
+
+        [1]
+        [2]
+        [3]
+
+    Legacy format is also supported:
+
+        [Source 1, Page 2]
+
+    The current numeric citation format is intentionally kept
+    separate from web citations such as:
+
+        [Web Source 1]
     """
 
     if not answer:
         return []
 
-    pattern = (
-        r"\[Source\s+\d+,\s*Page\s+\d+\]"
-    )
+    citations: list[str] = []
 
-    return re.findall(
-        pattern,
+    # ------------------------------------------------------------
+    # Current structured citation format
+    # ------------------------------------------------------------
+
+    current_pattern = r"(?<![A-Za-z])\[(\d+)\]"
+
+    current_citations = re.findall(
+        current_pattern,
         answer,
         flags=re.IGNORECASE,
     )
+
+    for citation_number in current_citations:
+        citation = f"[{citation_number}]"
+
+        if citation not in citations:
+            citations.append(citation)
+
+    # ------------------------------------------------------------
+    # Legacy citation format
+    # ------------------------------------------------------------
+
+    legacy_pattern = (
+        r"\[Source\s+\d+,\s*Page\s+\d+\]"
+    )
+
+    legacy_citations = re.findall(
+        legacy_pattern,
+        answer,
+        flags=re.IGNORECASE,
+    )
+
+    for citation in legacy_citations:
+        if citation not in citations:
+            citations.append(citation)
+
+    return citations
 
 
 def extract_web_citations(
@@ -595,9 +642,22 @@ def citation_coverage(
     """
     Measure citation coverage.
 
-    The metric checks whether the answer contains
-    at least the expected number of document and/or
-    web citation markers.
+    Supports current OmniMind document citations:
+
+        [1]
+        [2]
+        [3]
+
+    Legacy document citations are also supported:
+
+        [Source 1, Page 2]
+
+    Web citations:
+
+        [Web Source 1]
+
+    The metric checks whether the answer contains at least
+    the expected number of document and/or web citation markers.
 
     If no citations are expected, returns 1.0.
 
@@ -606,8 +666,6 @@ def citation_coverage(
             ["document"]
             ["web"]
             ["document", "web"]
-
-    This allows older evaluation code to remain compatible.
     """
 
     # ------------------------------------------------------------
@@ -696,7 +754,6 @@ def citation_coverage(
         actual_total
         / expected_total
     )
-
 
 # ============================================================
 # SOURCE COVERAGE
