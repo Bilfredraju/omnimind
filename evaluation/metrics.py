@@ -1153,3 +1153,216 @@ def grounding_quality(
         "citation_evidence_alignment": alignment,
         "grounding_score": overall,
     }
+
+
+# ============================================================================
+# CLAIM-LEVEL GROUNDING METRICS
+# ============================================================================
+
+
+def _split_claims(answer):
+    """
+    Split an answer into simple factual claims.
+
+    This is intentionally deterministic and lightweight.
+    """
+    if not answer:
+        return []
+
+    normalized = str(answer).replace("\n", " ")
+
+    raw_claims = []
+
+    for part in normalized.replace(";", ".").split("."):
+        claim = part.strip()
+
+        if claim:
+            raw_claims.append(claim)
+
+    return raw_claims
+
+
+def _tokenize_claim(text):
+    """
+    Tokenize text for deterministic claim/evidence comparison.
+    """
+    if not text:
+        return set()
+
+    return {
+        token.strip(".,!?;:()[]{}\"'")
+        for token in _normalize_grounding_text(text).split()
+        if token.strip(".,!?;:()[]{}\"'")
+    }
+
+
+def claim_support_score(claim, evidence_texts):
+    """
+    Measure how strongly one claim is supported by the retrieved evidence.
+
+    Uses token overlap between the claim and all retrieved evidence.
+
+    Returns:
+        float in [0, 1]
+    """
+    if not claim or not evidence_texts:
+        return 0.0
+
+    claim_tokens = _tokenize_claim(claim)
+
+    if not claim_tokens:
+        return 0.0
+
+    evidence_tokens = set()
+
+    for evidence in evidence_texts:
+        evidence_tokens.update(
+            _tokenize_claim(evidence)
+        )
+
+    if not evidence_tokens:
+        return 0.0
+
+    overlap = claim_tokens.intersection(
+        evidence_tokens
+    )
+
+    return len(overlap) / len(claim_tokens)
+
+
+def supported_claim_ratio(
+    answer,
+    evidence_texts,
+    threshold=0.5,
+):
+    """
+    Measure the fraction of answer claims sufficiently supported
+    by retrieved evidence.
+
+    A claim is considered supported when its token-overlap score
+    reaches the supplied threshold.
+
+    Returns:
+        float in [0, 1]
+    """
+    claims = _split_claims(answer)
+
+    if not claims:
+        return 0.0
+
+    supported = sum(
+        1
+        for claim in claims
+        if claim_support_score(
+            claim,
+            evidence_texts,
+        ) >= threshold
+    )
+
+    return supported / len(claims)
+
+
+def unsupported_claim_ratio(
+    answer,
+    evidence_texts,
+    threshold=0.5,
+):
+    """
+    Measure the fraction of answer claims that are not sufficiently
+    supported by retrieved evidence.
+
+    Returns:
+        float in [0, 1]
+    """
+    return 1.0 - supported_claim_ratio(
+        answer,
+        evidence_texts,
+        threshold=threshold,
+    )
+
+
+def average_claim_support(
+    answer,
+    evidence_texts,
+):
+    """
+    Calculate the average evidence support score across all claims.
+
+    Returns:
+        float in [0, 1]
+    """
+    claims = _split_claims(answer)
+
+    if not claims:
+        return 0.0
+
+    scores = [
+        claim_support_score(
+            claim,
+            evidence_texts,
+        )
+        for claim in claims
+    ]
+
+    return sum(scores) / len(scores)
+
+
+def claim_grounding_quality(
+    answer,
+    evidence_texts,
+    threshold=0.5,
+):
+    """
+    Produce a deterministic claim-level grounding report.
+
+    Returns:
+        dict containing claim counts, supported/unsupported ratios,
+        average support, and overall claim grounding score.
+    """
+    claims = _split_claims(answer)
+
+    if not claims:
+        return {
+            "claim_count": 0,
+            "supported_claims": 0,
+            "unsupported_claims": 0,
+            "supported_claim_ratio": 0.0,
+            "unsupported_claim_ratio": 0.0,
+            "average_claim_support": 0.0,
+            "claim_grounding_score": 0.0,
+        }
+
+    supported = sum(
+        1
+        for claim in claims
+        if claim_support_score(
+            claim,
+            evidence_texts,
+        ) >= threshold
+    )
+
+    unsupported = len(claims) - supported
+
+    supported_ratio = supported / len(claims)
+    unsupported_ratio = unsupported / len(claims)
+
+    average_support = average_claim_support(
+        answer,
+        evidence_texts,
+    )
+
+    # Combine discrete support ratio and continuous support.
+    overall = (
+        supported_ratio
+        + average_support
+    ) / 2.0
+
+    return {
+        "claim_count": len(claims),
+        "supported_claims": supported,
+        "unsupported_claims": unsupported,
+        "supported_claim_ratio": supported_ratio,
+        "unsupported_claim_ratio": unsupported_ratio,
+        "average_claim_support": average_support,
+        "claim_grounding_score": overall,
+    }
