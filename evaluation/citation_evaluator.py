@@ -1,263 +1,896 @@
 """
-OmniMind Citation Evaluation
+Unified citation, grounding, and claim-level RAG evaluation.
 
-Phase 19.7.4
-End-to-end validation of document citations and citation quality
-produced by the full OmniMind graph.
+Phase 19.8.4
+
+This evaluator combines:
+- Citation quality
+- Evidence grounding
+- Claim-level grounding
+
+It intentionally avoids LLM generation so evaluation can run
+deterministically without consuming Groq quota.
 """
+
+from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any, Dict, List
+
+
+# ---------------------------------------------------------------------------
+# Project root
+# ---------------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.graph import OmniMindGraph
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+
 from evaluation.metrics import (
     citation_coverage,
     citation_quality,
-    extract_document_citations,
-    extract_web_citations,
+    grounding_quality,
+    claim_grounding_quality,
 )
 
 
-PDF_PATH = PROJECT_ROOT / "data" / "raw" / "sample.pdf"
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+DEFAULT_QUERY = "What datasets were used to evaluate the RAG models?"
+
+DEFAULT_TOP_K = 5
 
 
-def main():
-    if not PDF_PATH.exists():
-        raise FileNotFoundError(
-            f"Sample PDF not found: {PDF_PATH}"
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _safe_text(value: Any) -> str:
+    """Convert a value to clean text."""
+
+    if value is None:
+        return ""
+
+    return str(value).strip()
+
+
+def _extract_rag_results(
+    state: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Extract RAG retrieval results from graph state."""
+
+    results = state.get("rag_results") or []
+
+    if not isinstance(results, list):
+        return []
+
+    return [
+        result
+        for result in results
+        if isinstance(result, dict)
+    ]
+
+
+def _extract_source_records(
+    state: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Extract source records and normalize them to dictionaries.
+
+    Some evaluation paths may expose source information as strings.
+    Those values are converted into structured records so the metric
+    functions always receive the expected input shape.
+    """
+
+    sources = state.get("sources") or []
+
+    if not isinstance(sources, list):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+
+    for source in sources:
+
+        if isinstance(source, dict):
+            normalized.append(source)
+            continue
+
+        if isinstance(source, str):
+            normalized.append(
+                {
+                    "citation_id": None,
+                    "source": source,
+                    "text": source,
+                }
+            )
+
+    return normalized
+
+
+def _extract_evidence_records(
+    rag_results: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Convert RAG results into structured evidence records.
+
+    Every returned record is guaranteed to be a dictionary.
+    """
+
+    evidence_records: List[Dict[str, Any]] = []
+
+    for result in rag_results:
+
+        if not isinstance(result, dict):
+            continue
+
+        text = _safe_text(
+            result.get("text")
         )
 
-    graph = OmniMindGraph(pdf_path=str(PDF_PATH))
+        if not text:
+            continue
 
-    query = "What datasets were used to evaluate the RAG models?"
+        citation = result.get("citation")
 
-    state = graph.run({"query": query})
+        citation_id = None
 
-    answer = state.get("final_answer", "")
-    sources = state.get("sources", [])
-    rag_results = state.get("rag_results", [])
+        if isinstance(citation, dict):
+            citation_id = citation.get(
+                "citation_id"
+            )
 
-    print("=" * 70)
-    print("OMNIMIND END-TO-END CITATION EVALUATION")
-    print("=" * 70)
+        if not citation_id:
+            citation_id = result.get(
+                "citation_id"
+            )
 
-    print(f"\nQuery:\n{query}")
+        evidence_records.append(
+            {
+                "text": text,
+                "citation_id": citation_id,
+                "result_id": result.get("result_id"),
+                "chunk_id": result.get("chunk_id"),
+                "document_id": result.get("document_id"),
+                "source": result.get("source"),
+                "document_name": result.get("document_name"),
+                "page": result.get("page"),
+                "metadata": (
+                    result.get("metadata")
+                    if isinstance(
+                        result.get("metadata"),
+                        dict,
+                    )
+                    else {}
+                ),
+                "citation": citation,
+            }
+        )
 
-    # ------------------------------------------------------------------
-    # GRAPH STATE
-    # ------------------------------------------------------------------
+    return evidence_records
 
-    print("\nGraph State:")
-    print(f"  Current Step : {state.get('current_step')}")
-    print(f"  Error        : {state.get('error')}")
 
-    # ------------------------------------------------------------------
-    # BASIC VALIDATION
-    # ------------------------------------------------------------------
+def _extract_evidence_texts(
+    evidence_records: List[Dict[str, Any]],
+) -> List[str]:
+    """Extract non-empty evidence text."""
 
-    if not answer:
-        raise AssertionError("Final answer is empty.")
+    return [
+        record["text"]
+        for record in evidence_records
+        if isinstance(record, dict)
+        and _safe_text(record.get("text"))
+    ]
 
-    print("\nFinal Answer:")
-    print(answer)
 
-    # ------------------------------------------------------------------
-    # CITATION EXTRACTION
-    # ------------------------------------------------------------------
+def _build_expected_citation_ids(
+    evidence_records: List[Dict[str, Any]],
+) -> List[str]:
+    """
+    Build expected citation IDs from retrieved evidence.
 
-    document_citations = extract_document_citations(answer)
-    web_citations = extract_web_citations(answer)
+    For this deterministic evaluation, all retrieved citations are
+    treated as the expected citation universe.
 
-    print("\nDetected Citations:")
-    print(f"  Document citations : {document_citations}")
-    print(f"  Web citations      : {web_citations}")
+    This is intentionally conservative and deterministic. A later
+    evaluation phase can introduce relevance-aware expected citations.
+    """
 
-    # ------------------------------------------------------------------
-    # EVIDENCE INFORMATION
-    # ------------------------------------------------------------------
+    ids: List[str] = []
 
-    print("\nEvidence:")
-    print(f"  RAG results   : {len(rag_results)}")
-    print(f"  Source records: {len(sources)}")
+    for record in evidence_records:
 
-    document_source_count = sum(
-        1
-        for source in sources
-        if source.get("type") == "document"
+        if not isinstance(record, dict):
+            continue
+
+        citation_id = record.get(
+            "citation_id"
+        )
+
+        if (
+            citation_id
+            and citation_id not in ids
+        ):
+            ids.append(
+                str(citation_id)
+            )
+
+    return ids
+
+
+def _ensure_source_citations(
+    source_records: List[Dict[str, Any]],
+    evidence_records: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Ensure source records contain structured citation IDs.
+
+    The real MCP retrieval results already contain citation objects.
+    This helper keeps source records aligned with those citations.
+    """
+
+    if not source_records:
+        return list(evidence_records)
+
+    normalized: List[Dict[str, Any]] = []
+
+    for index, source in enumerate(
+        source_records
+    ):
+
+        if not isinstance(source, dict):
+            continue
+
+        record = dict(source)
+
+        citation_id = record.get(
+            "citation_id"
+        )
+
+        if not citation_id:
+
+            citation = record.get(
+                "citation"
+            )
+
+            if isinstance(
+                citation,
+                dict,
+            ):
+                citation_id = citation.get(
+                    "citation_id"
+                )
+
+        if (
+            not citation_id
+            and index < len(evidence_records)
+        ):
+
+            evidence = evidence_records[index]
+
+            if isinstance(
+                evidence,
+                dict,
+            ):
+                citation_id = evidence.get(
+                    "citation_id"
+                )
+
+                if not record.get("citation"):
+                    record["citation"] = evidence.get(
+                        "citation"
+                    )
+
+                if not record.get("text"):
+                    record["text"] = evidence.get(
+                        "text"
+                    )
+
+        if citation_id:
+            record["citation_id"] = str(
+                citation_id
+            )
+
+        normalized.append(
+            record
+        )
+
+    return normalized
+
+
+# ---------------------------------------------------------------------------
+# Deterministic evidence sentence extraction
+# ---------------------------------------------------------------------------
+
+def _first_sentence(text: str) -> str:
+    """
+    Return the first reasonably complete sentence from evidence text.
+
+    This keeps the deterministic evaluation answer compact while
+    ensuring that the generated fixture remains directly grounded
+    in retrieved document content.
+    """
+
+    text = _safe_text(text)
+
+    if not text:
+        return ""
+
+    normalized = " ".join(
+        text.split()
     )
 
-    print(f"  Document sources: {document_source_count}")
+    if not normalized:
+        return ""
 
-    # ------------------------------------------------------------------
-    # CITATION COVERAGE
-    # ------------------------------------------------------------------
+    # Prefer a normal sentence boundary.
+    for separator in (". ", "? ", "! "):
+
+        if separator in normalized:
+
+            sentence = normalized.split(
+                separator,
+                1,
+            )[0].strip()
+
+            if sentence:
+                return sentence + separator.strip()
+
+    # If there is no sentence boundary, use the complete text.
+    return normalized
+
+
+def _build_deterministic_answer(
+    evidence_records: List[Dict[str, Any]],
+    max_evidence: int = 3,
+) -> str:
+    """
+    Build a deterministic answer directly from retrieved evidence.
+
+    No LLM is used.
+
+    Only the first few evidence records are included so the evaluation
+    remains readable while still testing multiple citations and claims.
+    """
+
+    answer_parts: List[str] = []
+
+    for record in evidence_records[:max_evidence]:
+
+        if not isinstance(record, dict):
+            continue
+
+        text = _safe_text(
+            record.get("text")
+        )
+
+        if not text:
+            continue
+
+        sentence = _first_sentence(
+            text
+        )
+
+        if not sentence:
+            continue
+
+        citation_id = _safe_text(
+            record.get("citation_id")
+        )
+
+        if citation_id:
+            answer_parts.append(
+                f"{sentence} {citation_id}"
+            )
+        else:
+            answer_parts.append(
+                sentence
+            )
+
+    if answer_parts:
+        return " ".join(
+            answer_parts
+        )
+
+    return (
+        "No textual evidence was retrieved for this query."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Unified evaluation
+# ---------------------------------------------------------------------------
+
+def evaluate_state(
+    state: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Evaluate a completed OmniMind evaluation state.
+
+    Returns a unified report containing:
+
+    Citation:
+    - coverage
+    - precision
+    - recall
+    - correctness
+    - completeness
+    - F1
+
+    Grounding:
+    - evidence utilization
+    - answer grounding
+    - citation-evidence alignment
+    - grounding score
+
+    Claim-level grounding:
+    - claim count
+    - supported claims
+    - unsupported claims
+    - supported ratio
+    - unsupported ratio
+    - average claim support
+    - claim grounding score
+    """
+
+    answer = _safe_text(
+        state.get("final_answer")
+        or state.get("answer")
+        or ""
+    )
+
+    # ---------------------------------------------------------------
+    # Retrieve evaluation inputs
+    # ---------------------------------------------------------------
+
+    rag_results = _extract_rag_results(
+        state
+    )
+
+    raw_source_records = _extract_source_records(
+        state
+    )
+
+    evidence_records = _extract_evidence_records(
+        rag_results
+    )
+
+    evidence_texts = _extract_evidence_texts(
+        evidence_records
+    )
+
+    # Normalize source records so the metrics always receive
+    # dictionaries instead of strings.
+    source_records = _ensure_source_citations(
+        raw_source_records,
+        evidence_records,
+    )
+
+    expected_citation_ids = _build_expected_citation_ids(
+        evidence_records
+    )
+
+    # ---------------------------------------------------------------
+    # Citation evaluation
+    # ---------------------------------------------------------------
 
     coverage = citation_coverage(
         answer,
-        expected_document_citations=document_source_count,
-        expected_web_citations=0,
+        len(expected_citation_ids),
     )
 
-    # ------------------------------------------------------------------
-    # EXPECTED CITATION IDS
-    # ------------------------------------------------------------------
-
-    expected_citation_ids = {
-        source.get("citation_id")
-        for source in sources
-        if source.get("type") == "document"
-        and source.get("citation_id")
-    }
-
-    # ------------------------------------------------------------------
-    # CITATION QUALITY
-    # ------------------------------------------------------------------
-
-    quality = citation_quality(
+    citations = citation_quality(
         answer,
-        sources,
-        expected_citation_ids=expected_citation_ids,
+        source_records,
+        expected_citation_ids,
     )
 
-    print(f"\nCitation Coverage: {coverage:.3f}")
+    # ---------------------------------------------------------------
+    # Grounding evaluation
+    # ---------------------------------------------------------------
 
-    print("\nCitation Quality:")
-    print(
-        f"  Precision    : "
-        f"{quality['citation_precision']:.3f}"
-    )
-    print(
-        f"  Recall       : "
-        f"{quality['citation_recall']:.3f}"
-    )
-    print(
-        f"  Correctness  : "
-        f"{quality['citation_correctness']:.3f}"
-    )
-    print(
-        f"  Completeness : "
-        f"{quality['citation_completeness']:.3f}"
-    )
-    print(
-        f"  F1           : "
-        f"{quality['citation_f1']:.3f}"
+    grounding = grounding_quality(
+        answer,
+        source_records,
+        evidence_texts,
+        evidence_records,
     )
 
-    # ------------------------------------------------------------------
-    # VALIDATION
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
+    # Claim-level grounding
+    # ---------------------------------------------------------------
 
-    assert state.get("error") in (None, ""), (
-        f"Graph returned an error: {state.get('error')}"
+    claims = claim_grounding_quality(
+        answer,
+        evidence_texts,
+        threshold=0.5,
     )
 
-    assert state.get("current_step") in (
-        "memory_write_complete",
-        "synthesis_complete",
-    ), (
-        f"Unexpected final graph step: "
-        f"{state.get('current_step')}"
+    # ---------------------------------------------------------------
+    # Unified score
+    # ---------------------------------------------------------------
+
+    citation_f1 = float(
+        citations.get(
+            "citation_f1",
+            0.0,
+        )
     )
 
-    assert len(rag_results) > 0, (
-        "Expected at least one RAG result."
+    grounding_score = float(
+        grounding.get(
+            "grounding_score",
+            0.0,
+        )
     )
 
-    assert len(sources) > 0, (
-        "Expected at least one final source record."
+    claim_grounding_score = float(
+        claims.get(
+            "claim_grounding_score",
+            0.0,
+        )
     )
 
-    assert len(document_citations) > 0, (
-        "Expected at least one document citation "
-        "in final answer."
-    )
+    unified_score = (
+        citation_f1
+        + grounding_score
+        + claim_grounding_score
+    ) / 3.0
 
-    assert coverage > 0.0, (
-        "Citation coverage should be greater than zero."
-    )
+    # ---------------------------------------------------------------
+    # Return complete report
+    # ---------------------------------------------------------------
 
-    # ------------------------------------------------------------------
-    # CITATION ID VALIDATION
-    # ------------------------------------------------------------------
+    return {
+        "query": state.get(
+            "query"
+        ),
 
-    source_citation_ids = {
-        source.get("citation_id")
-        for source in sources
-        if source.get("type") == "document"
-        and source.get("citation_id")
+        "answer": answer,
+
+        "retrieval": {
+            "result_count": len(
+                rag_results
+            ),
+
+            "evidence_count": len(
+                evidence_records
+            ),
+
+            "source_count": len(
+                source_records
+            ),
+
+            "expected_citation_ids": (
+                expected_citation_ids
+            ),
+        },
+
+        "citation": {
+            "coverage": coverage,
+            **citations,
+        },
+
+        "grounding": grounding,
+
+        "claim_grounding": claims,
+
+        "unified_rag_quality": unified_score,
     }
 
-    missing = [
-        citation
-        for citation in document_citations
-        if citation not in source_citation_ids
+
+# ---------------------------------------------------------------------------
+# Deterministic evaluation from real retrieval
+# ---------------------------------------------------------------------------
+
+def evaluate_real_retrieval(
+    query: str = DEFAULT_QUERY,
+    top_k: int = DEFAULT_TOP_K,
+) -> Dict[str, Any]:
+    """
+    Run real document retrieval and evaluate a deterministic,
+    evidence-grounded answer.
+
+    No LLM call is made.
+
+    The answer is constructed directly from the retrieved evidence
+    so that the evaluator measures citation, grounding, and
+    claim-level quality without introducing an intentionally
+    unsupported claim.
+    """
+
+    from mcp_servers.document_server import (
+        get_knowledge_base,
+    )
+
+    knowledge_base = get_knowledge_base()
+
+    # ---------------------------------------------------------------
+    # Real document retrieval
+    # ---------------------------------------------------------------
+
+    results = knowledge_base.search(
+        query,
+        top_k=top_k,
+    )
+
+    rag_results = [
+        result
+        for result in results
+        if isinstance(result, dict)
     ]
 
-    assert not missing, (
-        "Answer contains citations without matching "
-        f"source records: {missing}"
+    # ---------------------------------------------------------------
+    # Extract evidence
+    # ---------------------------------------------------------------
+
+    evidence_records = _extract_evidence_records(
+        rag_results
     )
 
-    # ------------------------------------------------------------------
-    # CITATION QUALITY VALIDATION
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
+    # Construct deterministic evidence-grounded answer
+    # ---------------------------------------------------------------
 
-    assert quality["citation_precision"] >= 0.0, (
-        "Citation precision must be >= 0."
+    answer = _build_deterministic_answer(
+        evidence_records,
+        max_evidence=min(
+            3,
+            len(evidence_records),
+        ),
     )
 
-    assert quality["citation_precision"] <= 1.0, (
-        "Citation precision must be <= 1."
+    # ---------------------------------------------------------------
+    # Build synthetic evaluation state
+    # ---------------------------------------------------------------
+
+    synthetic_state = {
+        "query": query,
+
+        "final_answer": answer,
+
+        "rag_results": rag_results,
+
+        "sources": [
+            record
+            for record in evidence_records
+            if isinstance(record, dict)
+            and record.get("citation_id")
+        ],
+    }
+
+    # ---------------------------------------------------------------
+    # Run unified evaluation
+    # ---------------------------------------------------------------
+
+    return evaluate_state(
+        synthetic_state
     )
 
-    assert quality["citation_recall"] >= 0.0, (
-        "Citation recall must be >= 0."
-    )
 
-    assert quality["citation_recall"] <= 1.0, (
-        "Citation recall must be <= 1."
-    )
+# ---------------------------------------------------------------------------
+# Pretty printing
+# ---------------------------------------------------------------------------
 
-    assert quality["citation_correctness"] >= 0.0, (
-        "Citation correctness must be >= 0."
-    )
+def print_report(
+    report: Dict[str, Any],
+) -> None:
+    """Print a readable unified evaluation report."""
 
-    assert quality["citation_correctness"] <= 1.0, (
-        "Citation correctness must be <= 1."
-    )
-
-    assert quality["citation_completeness"] >= 0.0, (
-        "Citation completeness must be >= 0."
-    )
-
-    assert quality["citation_completeness"] <= 1.0, (
-        "Citation completeness must be <= 1."
-    )
-
-    assert quality["citation_f1"] >= 0.0, (
-        "Citation F1 must be >= 0."
-    )
-
-    assert quality["citation_f1"] <= 1.0, (
-        "Citation F1 must be <= 1."
-    )
-
-    # ------------------------------------------------------------------
-    # SUCCESS
-    # ------------------------------------------------------------------
-
-    print("\n" + "=" * 70)
     print(
-        "PHASE 19.7.4 END-TO-END CITATION QUALITY "
-        "EVALUATION: PASSED"
+        "\n"
+        + "=" * 72
     )
-    print("=" * 70)
 
+    print(
+        "OMNIMIND — UNIFIED RAG QUALITY EVALUATION"
+    )
+
+    print(
+        "=" * 72
+    )
+
+    # ---------------------------------------------------------------
+    # Query
+    # ---------------------------------------------------------------
+
+    print("\nQuery:")
+
+    print(
+        report.get("query")
+    )
+
+    # ---------------------------------------------------------------
+    # Answer
+    # ---------------------------------------------------------------
+
+    print("\nAnswer:")
+
+    print(
+        report.get("answer")
+    )
+
+    # ---------------------------------------------------------------
+    # Retrieval
+    # ---------------------------------------------------------------
+
+    retrieval = report.get(
+        "retrieval",
+        {},
+    )
+
+    print("\nRetrieval:")
+
+    print(
+        f"  Results:             "
+        f"{retrieval.get('result_count', 0)}"
+    )
+
+    print(
+        f"  Evidence:            "
+        f"{retrieval.get('evidence_count', 0)}"
+    )
+
+    print(
+        f"  Sources:             "
+        f"{retrieval.get('source_count', 0)}"
+    )
+
+    print(
+        f"  Expected citations:  "
+        f"{retrieval.get('expected_citation_ids', [])}"
+    )
+
+    # ---------------------------------------------------------------
+    # Citation quality
+    # ---------------------------------------------------------------
+
+    citation = report.get(
+        "citation",
+        {},
+    )
+
+    print("\nCitation Quality:")
+
+    print(
+        f"  Coverage:            "
+        f"{citation.get('coverage', 0.0):.3f}"
+    )
+
+    print(
+        f"  Precision:           "
+        f"{citation.get('citation_precision', 0.0):.3f}"
+    )
+
+    print(
+        f"  Recall:              "
+        f"{citation.get('citation_recall', 0.0):.3f}"
+    )
+
+    print(
+        f"  Correctness:         "
+        f"{citation.get('citation_correctness', 0.0):.3f}"
+    )
+
+    print(
+        f"  Completeness:        "
+        f"{citation.get('citation_completeness', 0.0):.3f}"
+    )
+
+    print(
+        f"  F1:                  "
+        f"{citation.get('citation_f1', 0.0):.3f}"
+    )
+
+    # ---------------------------------------------------------------
+    # Grounding quality
+    # ---------------------------------------------------------------
+
+    grounding = report.get(
+        "grounding",
+        {},
+    )
+
+    print("\nGrounding Quality:")
+
+    print(
+        f"  Evidence utilization: "
+        f"{grounding.get('evidence_utilization', 0.0):.3f}"
+    )
+
+    print(
+        f"  Answer grounding:      "
+        f"{grounding.get('answer_grounding', 0.0):.3f}"
+    )
+
+    print(
+        f"  Citation alignment:    "
+        f"{grounding.get('citation_evidence_alignment', 0.0):.3f}"
+    )
+
+    print(
+        f"  Grounding score:       "
+        f"{grounding.get('grounding_score', 0.0):.3f}"
+    )
+
+    # ---------------------------------------------------------------
+    # Claim-level grounding
+    # ---------------------------------------------------------------
+
+    claims = report.get(
+        "claim_grounding",
+        {},
+    )
+
+    print("\nClaim-Level Grounding:")
+
+    print(
+        f"  Claims:                "
+        f"{claims.get('claim_count', 0)}"
+    )
+
+    print(
+        f"  Supported claims:      "
+        f"{claims.get('supported_claims', 0)}"
+    )
+
+    print(
+        f"  Unsupported claims:    "
+        f"{claims.get('unsupported_claims', 0)}"
+    )
+
+    print(
+        f"  Supported ratio:       "
+        f"{claims.get('supported_claim_ratio', 0.0):.3f}"
+    )
+
+    print(
+        f"  Unsupported ratio:     "
+        f"{claims.get('unsupported_claim_ratio', 0.0):.3f}"
+    )
+
+    print(
+        f"  Average claim support: "
+        f"{claims.get('average_claim_support', 0.0):.3f}"
+    )
+
+    print(
+        f"  Claim grounding:       "
+        f"{claims.get('claim_grounding_score', 0.0):.3f}"
+    )
+
+    # ---------------------------------------------------------------
+    # Unified score
+    # ---------------------------------------------------------------
+
+    print("\nUnified RAG Quality:")
+
+    print(
+        f"  Score:                 "
+        f"{report.get('unified_rag_quality', 0.0):.3f}"
+    )
+
+    print(
+        "=" * 72
+    )
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    main()
+
+    report = evaluate_real_retrieval()
+
+    print_report(
+        report
+    )
