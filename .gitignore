@@ -11,10 +11,26 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Data
+
+
+
+# Data
 data/raw/*
 data/processed/*
 data/vector_store/*
 data/memory/*
+data/documents/*
+data/qdrant/*
+data/evaluation_memory/*
+
+# Keep data directories in Git
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/vector_store/.gitkeep
+!data/memory/.gitkeep
+!data/documents/.gitkeep
+!data/qdrant/.gitkeep
+!data/evaluation_memory/.gitkeep
 
 # Keep data directories in Git
 !data/raw/.gitkeep
