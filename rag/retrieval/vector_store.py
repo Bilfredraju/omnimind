@@ -3,10 +3,11 @@ Persistent Qdrant vector store for OmniMind.
 
 Supports:
 - Persistent local Qdrant storage
-- Globally stable point IDs
 - Multi-document indexing
+- Globally stable vector IDs
 - Document-level filtering
 - Deterministic re-indexing
+- Document-specific deletion
 - Metadata preservation
 """
 
@@ -18,68 +19,90 @@ from pathlib import Path
 from typing import Any
 
 from qdrant_client import QdrantClient
-from qdrant_client.http import models
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointStruct,
+    FilterSelector,
+    VectorParams,
+)
 
 
 class QdrantVectorStore:
     """
-    Persistent local Qdrant vector store.
+    Persistent local Qdrant vector store for OmniMind.
 
-    Vector IDs are derived deterministically from the document_id and
-    chunk_id, preventing collisions between different documents.
+    Each vector is identified deterministically using:
+
+        document_id + chunk_id
+
+    This prevents vector ID collisions when multiple documents
+    are indexed into the same collection.
     """
-
-    DEFAULT_COLLECTION_NAME = "omnimind_documents"
-    DEFAULT_VECTOR_SIZE = 384
-    DEFAULT_STORAGE_PATH = "data/vector_store/qdrant"
 
     def __init__(
         self,
-        collection_name: str = DEFAULT_COLLECTION_NAME,
-        vector_size: int = DEFAULT_VECTOR_SIZE,
-        storage_path: str | Path = DEFAULT_STORAGE_PATH,
-    ) -> None:
+        collection_name: str = "omnimind_documents",
+        vector_size: int = 384,
+        storage_path: str = "data/vector_store/qdrant",
+    ):
         self.collection_name = collection_name
         self.vector_size = vector_size
-        self.storage_path = Path(storage_path)
 
-        self.storage_path.mkdir(
+        storage = Path(storage_path)
+        storage.mkdir(
             parents=True,
             exist_ok=True,
         )
 
+        self.storage_path = storage
+
         self.client = QdrantClient(
-            path=str(self.storage_path)
+            path=str(storage)
         )
 
         self._create_collection()
 
     # ------------------------------------------------------------------
-    # Collection management
+    # Collection
     # ------------------------------------------------------------------
 
-    def _create_collection(self) -> None:
-        """
-        Create the collection if it does not already exist.
-        """
-        collections = self.client.get_collections()
+    def _create_collection(self):
+        """Create the collection if it doesn't exist."""
 
-        existing_names = {
+        existing_collections = [
             collection.name
-            for collection in collections.collections
-        }
+            for collection in (
+                self.client
+                .get_collections()
+                .collections
+            )
+        ]
 
-        if self.collection_name not in existing_names:
+        if self.collection_name not in existing_collections:
             self.client.create_collection(
                 collection_name=self.collection_name,
-                vectors_config=models.VectorParams(
+                vectors_config=VectorParams(
                     size=self.vector_size,
-                    distance=models.Distance.COSINE,
+                    distance=Distance.COSINE,
                 ),
             )
 
+            print(
+                f"Created Qdrant collection: "
+                f"{self.collection_name}"
+            )
+
+        else:
+            print(
+                f"Qdrant collection already exists: "
+                f"{self.collection_name}"
+            )
+
     # ------------------------------------------------------------------
-    # Stable ID generation
+    # Stable IDs
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -93,8 +116,10 @@ class QdrantVectorStore:
         The same document_id + chunk_id combination always produces
         the same Qdrant point ID.
         """
+
         identity = (
-            f"{document_id.strip()}::{chunk_id.strip()}"
+            f"{str(document_id).strip()}::"
+            f"{str(chunk_id).strip()}"
         )
 
         return str(
@@ -110,22 +135,32 @@ class QdrantVectorStore:
         index: int,
     ) -> str:
         """
-        Generate a deterministic chunk ID when the ingestion pipeline
-        does not provide one.
+        Generate a deterministic chunk ID if the chunk doesn't
+        already contain one.
         """
-        metadata = chunk.get("metadata", {})
+
+        metadata = chunk.get(
+            "metadata",
+            {},
+        )
 
         if not isinstance(metadata, dict):
             metadata = {}
 
         text = str(
-            chunk.get("text", "")
+            chunk.get(
+                "text",
+                "",
+            )
         )
 
         page = str(
             metadata.get(
                 "page",
-                metadata.get("page_number", ""),
+                metadata.get(
+                    "page_number",
+                    "",
+                ),
             )
         )
 
@@ -133,19 +168,23 @@ class QdrantVectorStore:
             f"{page}::{index}::{text}"
         )
 
-        return hashlib.sha256(
+        digest = hashlib.sha256(
             raw_identity.encode("utf-8")
-        ).hexdigest()[:24]
+        ).hexdigest()
+
+        return f"chunk-{digest[:16]}"
 
     @classmethod
     def _get_document_id(
         cls,
         chunk: dict[str, Any],
     ) -> str:
-        """
-        Extract document_id from chunk metadata.
-        """
-        metadata = chunk.get("metadata", {})
+        """Extract document_id from a chunk."""
+
+        metadata = chunk.get(
+            "metadata",
+            {},
+        )
 
         if not isinstance(metadata, dict):
             metadata = {}
@@ -172,10 +211,12 @@ class QdrantVectorStore:
         chunk: dict[str, Any],
         index: int,
     ) -> str:
-        """
-        Extract chunk_id from chunk metadata or generate a fallback.
-        """
-        metadata = chunk.get("metadata", {})
+        """Extract chunk_id or create a deterministic fallback."""
+
+        metadata = chunk.get(
+            "metadata",
+            {},
+        )
 
         if not isinstance(metadata, dict):
             metadata = {}
@@ -198,52 +239,52 @@ class QdrantVectorStore:
         )
 
     # ------------------------------------------------------------------
-    # Document indexing
+    # Indexing
     # ------------------------------------------------------------------
 
     def add_documents(
         self,
-        chunks: list[dict[str, Any]],
+        chunks: list[dict],
         embeddings: list[list[float]],
     ) -> list[str]:
         """
-        Add or update document chunks in Qdrant.
+        Store document chunks and embeddings.
 
-        Because point IDs are deterministic, indexing the same chunk
-        again updates the existing point rather than creating a
-        duplicate.
-
-        Args:
-            chunks:
-                Chunk dictionaries containing text and metadata.
-
-            embeddings:
-                Embedding vectors corresponding to chunks.
+        Existing points with the same deterministic ID are updated
+        rather than duplicated.
 
         Returns:
             List of Qdrant point IDs.
         """
+
         if len(chunks) != len(embeddings):
             raise ValueError(
-                "Number of chunks must match number of embeddings."
+                "Number of chunks and embeddings must match."
             )
 
         if not chunks:
             return []
 
-        points: list[models.PointStruct] = []
+        points: list[PointStruct] = []
         point_ids: list[str] = []
 
-        for index, (chunk, embedding) in enumerate(
+        for index, (
+            chunk,
+            embedding,
+        ) in enumerate(
             zip(chunks, embeddings)
         ):
             text = str(
-                chunk.get("text", "")
+                chunk.get(
+                    "text",
+                    "",
+                )
             ).strip()
 
             if not text:
                 raise ValueError(
-                    f"Chunk at index {index} contains empty text."
+                    f"Chunk at index {index} "
+                    f"contains empty text."
                 )
 
             document_id = self._get_document_id(
@@ -268,16 +309,17 @@ class QdrantVectorStore:
             if not isinstance(metadata, dict):
                 metadata = {}
 
-            # Preserve the original metadata while guaranteeing the
-            # identity fields exist at the top level of metadata.
-            stored_metadata = dict(metadata)
+            stored_metadata = dict(
+                metadata
+            )
 
-            stored_metadata["document_id"] = (
-                document_id
-            )
-            stored_metadata["chunk_id"] = (
-                chunk_id
-            )
+            stored_metadata[
+                "document_id"
+            ] = document_id
+
+            stored_metadata[
+                "chunk_id"
+            ] = chunk_id
 
             payload = {
                 "text": text,
@@ -287,7 +329,7 @@ class QdrantVectorStore:
             }
 
             points.append(
-                models.PointStruct(
+                PointStruct(
                     id=point_id,
                     vector=list(embedding),
                     payload=payload,
@@ -300,6 +342,10 @@ class QdrantVectorStore:
             collection_name=self.collection_name,
             points=points,
             wait=True,
+        )
+
+        print(
+            f"Stored {len(points)} chunks in Qdrant."
         )
 
         return point_ids
@@ -315,21 +361,11 @@ class QdrantVectorStore:
         document_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """
-        Search the vector store.
+        Search vectors using cosine similarity.
 
-        Args:
-            query_embedding:
-                Query embedding vector.
-
-            top_k:
-                Number of results to return.
-
-            document_id:
-                Optional document-level filter.
-
-        Returns:
-            Ranked search results.
+        Optionally restrict results to one document.
         """
+
         if top_k <= 0:
             return []
 
@@ -345,11 +381,11 @@ class QdrantVectorStore:
                     "document_id cannot be empty."
                 )
 
-            query_filter = models.Filter(
+            query_filter = Filter(
                 must=[
-                    models.FieldCondition(
+                    FieldCondition(
                         key="document_id",
-                        match=models.MatchValue(
+                        match=MatchValue(
                             value=document_id
                         ),
                     )
@@ -364,13 +400,16 @@ class QdrantVectorStore:
             with_payload=True,
         )
 
-        results = []
+        results: list[dict[str, Any]] = []
 
         for rank, point in enumerate(
             response.points,
             start=1,
         ):
-            payload = point.payload or {}
+            payload = (
+                point.payload
+                or {}
+            )
 
             metadata = payload.get(
                 "metadata",
@@ -408,7 +447,7 @@ class QdrantVectorStore:
         return results
 
     # ------------------------------------------------------------------
-    # Document-specific helpers
+    # Counts
     # ------------------------------------------------------------------
 
     def count(
@@ -416,18 +455,19 @@ class QdrantVectorStore:
         document_id: str | None = None,
     ) -> int:
         """
-        Return the number of indexed vectors.
+        Return total vector count.
 
         If document_id is provided, return only vectors belonging
         to that document.
         """
+
         if document_id is None:
-            return int(
-                self.client.count(
-                    collection_name=self.collection_name,
-                    exact=True,
-                ).count
+            result = self.client.count(
+                collection_name=self.collection_name,
+                exact=True,
             )
+
+            return int(result.count)
 
         document_id = str(
             document_id
@@ -436,23 +476,40 @@ class QdrantVectorStore:
         if not document_id:
             return 0
 
-        query_filter = models.Filter(
+        query_filter = Filter(
             must=[
-                models.FieldCondition(
+                FieldCondition(
                     key="document_id",
-                    match=models.MatchValue(
+                    match=MatchValue(
                         value=document_id
                     ),
                 )
             ]
         )
 
-        return int(
-            self.client.count(
-                collection_name=self.collection_name,
-                count_filter=query_filter,
-                exact=True,
-            ).count
+        result = self.client.count(
+            collection_name=self.collection_name,
+            count_filter=query_filter,
+            exact=True,
+        )
+
+        return int(result.count)
+
+    # ------------------------------------------------------------------
+    # Document operations
+    # ------------------------------------------------------------------
+
+    def document_exists(
+        self,
+        document_id: str,
+    ) -> bool:
+        """Return True if the document has indexed vectors."""
+
+        return (
+            self.count(
+                document_id=document_id
+            )
+            > 0
         )
 
     def delete_document(
@@ -462,6 +519,7 @@ class QdrantVectorStore:
         """
         Delete all vectors belonging to a document.
         """
+
         document_id = str(
             document_id
         ).strip()
@@ -471,11 +529,11 @@ class QdrantVectorStore:
                 "document_id cannot be empty."
             )
 
-        query_filter = models.Filter(
+        query_filter = Filter(
             must=[
-                models.FieldCondition(
+                FieldCondition(
                     key="document_id",
-                    match=models.MatchValue(
+                    match=MatchValue(
                         value=document_id
                     ),
                 )
@@ -484,31 +542,24 @@ class QdrantVectorStore:
 
         self.client.delete(
             collection_name=self.collection_name,
-            points_selector=models.FilterSelector(
+            points_selector=FilterSelector(
                 filter=query_filter
             ),
             wait=True,
         )
 
-    def document_exists(
-        self,
-        document_id: str,
-    ) -> bool:
-        """
-        Check whether a document has indexed vectors.
-        """
-        return self.count(
-            document_id=document_id
-        ) > 0
+        print(
+            f"Deleted vectors for document: "
+            f"{document_id}"
+        )
 
     # ------------------------------------------------------------------
-    # Collection information
+    # Information
     # ------------------------------------------------------------------
 
     def collection_info(self) -> dict[str, Any]:
-        """
-        Return useful collection statistics.
-        """
+        """Return collection statistics."""
+
         info = self.client.get_collection(
             collection_name=self.collection_name
         )
@@ -537,8 +588,9 @@ class QdrantVectorStore:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def close(self) -> None:
-        """
-        Close the Qdrant client.
-        """
-        self.client.close()
+    def close(self):
+        """Close the Qdrant client cleanly."""
+
+        if self.client is not None:
+            self.client.close()
+            self.client = None
