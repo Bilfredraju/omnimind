@@ -52,3 +52,4 @@ data/evaluation_memory/
 
 # Temporary debugging scripts
 scripts/debug_live_temporal.py
+evaluation/reports/*.json
