@@ -22,266 +22,196 @@ if str(PROJECT_ROOT) not in sys.path:
 from mcp.server import MCPServer
 
 from rag.embeddings.embedder import EmbeddingModel
-from rag.ingestion.loader import load_pdf
-from rag.ingestion.chunker import chunk_documents
-from rag.retrieval.bm25 import BM25Retriever
+from rag.ingestion.document_manager import DocumentManager
+from rag.retrieval.vector_store import QdrantVectorStore
 from rag.retrieval.reranker import CrossEncoderReranker
 from rag.retrieval.citations import build_citation
-from rag.retrieval.query_expansion import QueryExpander
+
+
+# ============================================================
+# PROJECT ROOT
+# ============================================================
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-DEFAULT_CHUNK_SIZE = 800
-DEFAULT_CHUNK_OVERLAP = 150
-
-DEFAULT_SEMANTIC_WEIGHT = 0.7
-DEFAULT_KEYWORD_WEIGHT = 0.3
-DEFAULT_RRF_K = 60
-
-DEFAULT_RERANK_CANDIDATES = 10
-
-# Multi-query retrieval
-DEFAULT_MAX_QUERIES = 3
-
-# Original user query receives the highest priority.
-#
-# Query 1 = original query
-# Query 2 = keyword-oriented expansion
-# Query 3 = semantic/domain expansion
-#
-# These weights are intentionally conservative so that a weak
-# expansion cannot overpower the user's original intent.
-DEFAULT_MULTI_QUERY_WEIGHTS = [1.0, 0.5, 0.5]
-
+DEFAULT_TOP_K = 5
 MAX_TOP_K = 10
 
 
 # ============================================================
-# DOCUMENT KNOWLEDGE BASE
+# PERSISTENT DOCUMENT KNOWLEDGE BASE
 # ============================================================
 
-class DocumentKnowledgeBase:
+
+class PersistentDocumentKnowledgeBase:
     """
-    In-memory document knowledge base used by the MCP document server.
+    Persistent multi-document knowledge base.
 
-    Retrieval pipeline:
+    Retrieval architecture:
 
-        Document
-            ↓
-        Sentence-aware chunks
-            ↓
-        Embeddings + BM25
-            ↓
-        Hybrid RRF
-            ↓
-        Multi-query weighted RRF
-            ↓
-        Cross-encoder reranking
-            ↓
+        User Query
+             |
+             v
+        EmbeddingModel
+             |
+             v
+        Persistent Qdrant
+             |
+             v
+        Document-aware semantic retrieval
+             |
+             v
+        Cross-Encoder reranking
+             |
+             v
         Citation-aware results
+
+    The document registry is used as the source of truth for
+    registered/indexed documents.
+
+    Qdrant stores the actual searchable document chunks.
     """
 
     def __init__(
         self,
-        file_path: str | Path,
         *,
-        chunk_size: int = DEFAULT_CHUNK_SIZE,
-        chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
-        semantic_weight: float = DEFAULT_SEMANTIC_WEIGHT,
-        keyword_weight: float = DEFAULT_KEYWORD_WEIGHT,
-        rrf_k: int = DEFAULT_RRF_K,
-        rerank_candidates: int = DEFAULT_RERANK_CANDIDATES,
-        max_queries: int = DEFAULT_MAX_QUERIES,
+        registry_path: str | Path | None = None,
+        collection_name: str = "omnimind_documents",
+        vector_size: int = 384,
+        storage_path: str | Path = "data/vector_store/qdrant",
+        rerank_candidates: int = 10,
     ) -> None:
 
-        self.file_path = Path(file_path).resolve()
-
-        # ---------------------------------------------------------
-        # Validation
-        # ---------------------------------------------------------
-
-        if not self.file_path.exists():
-            raise FileNotFoundError(
-                f"Document not found: {self.file_path}"
-            )
-
-        if not self.file_path.is_file():
-            raise ValueError(
-                f"Path is not a file: {self.file_path}"
-            )
-
-        if chunk_size <= 0:
-            raise ValueError(
-                "chunk_size must be greater than zero."
-            )
-
-        if chunk_overlap < 0:
-            raise ValueError(
-                "chunk_overlap cannot be negative."
-            )
-
-        if chunk_overlap >= chunk_size:
-            raise ValueError(
-                "chunk_overlap must be smaller than chunk_size."
-            )
-
-        if semantic_weight < 0:
-            raise ValueError(
-                "semantic_weight cannot be negative."
-            )
-
-        if keyword_weight < 0:
-            raise ValueError(
-                "keyword_weight cannot be negative."
-            )
-
-        if semantic_weight == 0 and keyword_weight == 0:
-            raise ValueError(
-                "At least one retrieval weight must be greater than zero."
-            )
-
-        if rrf_k <= 0:
-            raise ValueError(
-                "rrf_k must be greater than zero."
-            )
-
-        if rerank_candidates <= 0:
-            raise ValueError(
-                "rerank_candidates must be greater than zero."
-            )
-
-        if max_queries <= 0:
-            raise ValueError(
-                "max_queries must be greater than zero."
-            )
-
-        # ---------------------------------------------------------
-        # Configuration
-        # ---------------------------------------------------------
-
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-
-        self.semantic_weight = semantic_weight
-        self.keyword_weight = keyword_weight
-        self.rrf_k = rrf_k
-
-        self.rerank_candidates = rerank_candidates
-
-        self.max_queries = min(
-            max_queries,
-            len(DEFAULT_MULTI_QUERY_WEIGHTS),
+        self.document_manager = DocumentManager(
+            registry_path=registry_path,
         )
 
-        self.multi_query_weights = (
-            DEFAULT_MULTI_QUERY_WEIGHTS[:self.max_queries]
+        self.vector_store = QdrantVectorStore(
+            collection_name=collection_name,
+            vector_size=vector_size,
+            storage_path=str(storage_path),
         )
-
-        self.query_expander = QueryExpander(
-            max_queries=self.max_queries
-        )
-
-        # ---------------------------------------------------------
-        # Load document
-        # ---------------------------------------------------------
-
-        documents = load_pdf(
-            str(self.file_path)
-        )
-
-        self.chunks = chunk_documents(
-            documents,
-            chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-        )
-
-        # ---------------------------------------------------------
-        # Embedding model
-        # ---------------------------------------------------------
 
         self.embedding_model = EmbeddingModel()
 
-        texts = [
-            chunk["text"]
-            for chunk in self.chunks
-        ]
-
-        if texts:
-            self.embeddings = self.embedding_model.encode(
-                texts
-            )
-        else:
-            self.embeddings = []
-
-        # ---------------------------------------------------------
-        # BM25
-        # ---------------------------------------------------------
-
-        self.bm25 = BM25Retriever(
-            self.chunks
-        )
-
-        # ---------------------------------------------------------
-        # Cross encoder
-        # ---------------------------------------------------------
-
         self.reranker = CrossEncoderReranker()
 
-    # =============================================================
-    # Utility helpers
-    # =============================================================
+        self.rerank_candidates = max(
+            1,
+            int(rerank_candidates),
+        )
+
+    # ========================================================
+    # VALIDATION
+    # ========================================================
 
     @staticmethod
-    def _result_id(
-        chunk: dict[str, Any],
-        index: int,
-    ) -> str:
+    def _validate_query(query: str) -> str:
+        if not isinstance(query, str):
+            raise TypeError("query must be a string.")
 
-        metadata = chunk.get("metadata", {})
+        query = query.strip()
 
-        if isinstance(metadata, dict):
-            chunk_id = metadata.get("chunk_id")
+        if not query:
+            raise ValueError(
+                "query cannot be empty."
+            )
 
-            if chunk_id:
-                return str(chunk_id)
-
-        chunk_id = chunk.get("chunk_id")
-
-        if chunk_id:
-            return str(chunk_id)
-
-        return f"chunk-{index}"
+        return query
 
     @staticmethod
-    def _metadata(
-        result: dict[str, Any],
-    ) -> dict[str, Any]:
+    def _validate_top_k(top_k: int) -> int:
+        if not isinstance(top_k, int):
+            raise TypeError(
+                "top_k must be an integer."
+            )
 
-        metadata = result.get("metadata")
+        if top_k < 1 or top_k > MAX_TOP_K:
+            raise ValueError(
+                f"top_k must be between "
+                f"1 and {MAX_TOP_K}."
+            )
 
-        if isinstance(metadata, dict):
-            return metadata
+        return top_k
 
-        return {}
+    def _validate_document_id(
+        self,
+        document_id: str | None,
+    ) -> str | None:
+        """
+        Validate an optional document ID.
 
-    # =============================================================
-    # Semantic retrieval
-    # =============================================================
+        A document ID is accepted only when the document is
+        registered and indexed.
+        """
 
-    def semantic_search(
+        if document_id is None:
+            return None
+
+        document_id = str(
+            document_id
+        ).strip()
+
+        if not document_id:
+            raise ValueError(
+                "document_id cannot be empty."
+            )
+
+        document = self.document_manager.get_document(
+            document_id
+        )
+
+        if document is None:
+            raise ValueError(
+                f"Document not found: {document_id}"
+            )
+
+        if document.get("status") != "indexed":
+            raise ValueError(
+                f"Document is not indexed: {document_id}"
+            )
+
+        if not self.vector_store.document_exists(
+            document_id
+        ):
+            raise ValueError(
+                f"Document has no indexed vectors: "
+                f"{document_id}"
+            )
+
+        return document_id
+
+    # ========================================================
+    # SEARCH
+    # ========================================================
+
+    def search(
         self,
         query: str,
-        top_k: int = 5,
+        *,
+        top_k: int = DEFAULT_TOP_K,
+        document_id: str | None = None,
     ) -> list[dict[str, Any]]:
 
-        if not query.strip():
-            return []
+        query = self._validate_query(query)
 
-        if not self.chunks:
-            return []
+        top_k = self._validate_top_k(top_k)
+
+        document_id = self._validate_document_id(
+            document_id
+        )
+
+        # ----------------------------------------------------
+        # Query embedding
+        # ----------------------------------------------------
 
         query_embedding = (
             self.embedding_model.encode_single(
@@ -289,629 +219,107 @@ class DocumentKnowledgeBase:
             )
         )
 
-        scored: list[dict[str, Any]] = []
-
-        for index, embedding in enumerate(
-            self.embeddings
-        ):
-
-            score = float(
-                sum(
-                    a * b
-                    for a, b in zip(
-                        query_embedding,
-                        embedding,
-                    )
-                )
-            )
-
-            chunk = self.chunks[index]
-
-            scored.append(
-                {
-                    "result_id": self._result_id(
-                        chunk,
-                        index,
-                    ),
-                    "score": score,
-                    "text": chunk["text"],
-                    "metadata": chunk.get(
-                        "metadata",
-                        {},
-                    ),
-                }
-            )
-
-        scored.sort(
-            key=lambda item: item["score"],
-            reverse=True,
-        )
-
-        results = scored[:top_k]
-
-        for rank, result in enumerate(
-            results,
-            start=1,
-        ):
-            result["semantic_rank"] = rank
-
-        return results
-
-    # =============================================================
-    # Hybrid RRF retrieval
-    # =============================================================
-
-    def hybrid_search(
-        self,
-        query: str,
-        top_k: int = 5,
-    ) -> list[dict[str, Any]]:
-
-        if not query.strip():
-            return []
-
-        if not self.chunks:
-            return []
+        # ----------------------------------------------------
+        # Retrieve a larger candidate pool before reranking.
+        # ----------------------------------------------------
 
         candidate_k = min(
-            len(self.chunks),
-            max(top_k * 5, 20),
-        )
-
-        semantic_results = self.semantic_search(
-            query,
-            top_k=candidate_k,
-        )
-
-        keyword_results = self.bm25.search(
-            query,
-            top_k=candidate_k,
-        )
-
-        merged: dict[str, dict[str, Any]] = {}
-
-        # ---------------------------------------------------------
-        # Semantic candidates
-        # ---------------------------------------------------------
-
-        for rank, result in enumerate(
-            semantic_results,
-            start=1,
-        ):
-
-            result_id = result["result_id"]
-
-            if result_id not in merged:
-                merged[result_id] = {
-                    "result_id": result_id,
-                    "text": result["text"],
-                    "metadata": result["metadata"],
-                    "semantic_score": None,
-                    "keyword_score": None,
-                    "semantic_rank": None,
-                    "keyword_rank": None,
-                    "retrieval_sources": [],
-                }
-
-            merged[result_id][
-                "semantic_score"
-            ] = result["score"]
-
-            merged[result_id][
-                "semantic_rank"
-            ] = rank
-
-            if (
-                "semantic"
-                not in merged[result_id][
-                    "retrieval_sources"
-                ]
-            ):
-                merged[result_id][
-                    "retrieval_sources"
-                ].append("semantic")
-
-        # ---------------------------------------------------------
-        # BM25 candidates
-        # ---------------------------------------------------------
-
-        for rank, result in enumerate(
-            keyword_results,
-            start=1,
-        ):
-
-            result_id = result["result_id"]
-
-            if result_id not in merged:
-                merged[result_id] = {
-                    "result_id": result_id,
-                    "text": result["text"],
-                    "metadata": result["metadata"],
-                    "semantic_score": None,
-                    "keyword_score": None,
-                    "semantic_rank": None,
-                    "keyword_rank": None,
-                    "retrieval_sources": [],
-                }
-
-            merged[result_id][
-                "keyword_score"
-            ] = result.get(
-                "bm25_score",
-                result.get("score"),
-            )
-
-            merged[result_id][
-                "keyword_rank"
-            ] = rank
-
-            if (
-                "bm25"
-                not in merged[result_id][
-                    "retrieval_sources"
-                ]
-            ):
-                merged[result_id][
-                    "retrieval_sources"
-                ].append("bm25")
-
-        # ---------------------------------------------------------
-        # Weighted Hybrid RRF
-        # ---------------------------------------------------------
-
-        for result in merged.values():
-
-            semantic_rank = result[
-                "semantic_rank"
-            ]
-
-            keyword_rank = result[
-                "keyword_rank"
-            ]
-
-            semantic_rrf = (
-                self.semantic_weight
-                / (
-                    self.rrf_k
-                    + semantic_rank
-                )
-                if semantic_rank is not None
-                else 0.0
-            )
-
-            keyword_rrf = (
-                self.keyword_weight
-                / (
-                    self.rrf_k
-                    + keyword_rank
-                )
-                if keyword_rank is not None
-                else 0.0
-            )
-
-            result[
-                "semantic_rrf_score"
-            ] = semantic_rrf
-
-            result[
-                "keyword_rrf_score"
-            ] = keyword_rrf
-
-            result[
-                "hybrid_score"
-            ] = (
-                semantic_rrf
-                + keyword_rrf
-            )
-
-            result[
-                "retrieval_source_count"
-            ] = len(
-                result[
-                    "retrieval_sources"
-                ]
-            )
-
-        results = list(
-            merged.values()
-        )
-
-        results.sort(
-            key=lambda item: (
-                item["hybrid_score"],
-                item[
-                    "retrieval_source_count"
-                ],
-                -(
-                    item["semantic_rank"]
-                    if item[
-                        "semantic_rank"
-                    ] is not None
-                    else 10**9
-                ),
+            MAX_TOP_K * 2,
+            max(
+                top_k * 2,
+                self.rerank_candidates,
             ),
-            reverse=True,
         )
 
-        return results[:candidate_k]
-
-    # =============================================================
-    # Weighted Multi-Query Retrieval
-    # =============================================================
-
-    def multi_query_search(
-        self,
-        query: str,
-        top_k: int = 5,
-    ) -> list[dict[str, Any]]:
-
-        """
-        Perform multi-query retrieval using weighted RRF.
-
-        Query priorities:
-
-            Original query       -> 1.0
-            Keyword expansion    -> 0.5
-            Semantic expansion   -> 0.5
-
-        The original query therefore remains the strongest
-        retrieval signal.
-
-        Each expanded query performs its own hybrid retrieval.
-        The resulting candidate sets are then fused using
-        weighted Reciprocal Rank Fusion.
-        """
-
-        if not query.strip():
-            return []
-
-        if not self.chunks:
-            return []
-
-        if top_k <= 0:
-            return []
-
-        expanded_queries = (
-            self.query_expander.expand(
-                query
-            )
-        )
-
-        if not expanded_queries:
-            return []
-
-        candidate_k = min(
-            len(self.chunks),
-            max(top_k * 5, 20),
-        )
-
-        fused: dict[str, dict[str, Any]] = {}
-
-        # ---------------------------------------------------------
-        # Retrieve for every query variation
-        # ---------------------------------------------------------
-
-        for query_index, expanded_query in enumerate(
-            expanded_queries
-        ):
-
-            hybrid_results = self.hybrid_search(
-                expanded_query,
-                top_k=candidate_k,
-            )
-
-            # Use configured weight.
-            #
-            # If more queries are somehow generated than
-            # configured, use the last configured weight.
-            if query_index < len(
-                self.multi_query_weights
-            ):
-                weight = (
-                    self.multi_query_weights[
-                        query_index
-                    ]
-                )
-            else:
-                weight = (
-                    self.multi_query_weights[-1]
-                )
-
-            # -----------------------------------------------------
-            # Weighted RRF
-            # -----------------------------------------------------
-
-            for rank, result in enumerate(
-                hybrid_results,
-                start=1,
-            ):
-
-                result_id = result.get(
-                    "result_id"
-                )
-
-                if not result_id:
-                    continue
-
-                contribution = (
-                    weight
-                    / (
-                        self.rrf_k
-                        + rank
-                    )
-                )
-
-                if result_id not in fused:
-                    fused[result_id] = {
-                        "result": dict(
-                            result
-                        ),
-                        "multi_query_score": 0.0,
-                        "multi_query_matches": 0,
-                        "multi_query_sources": [],
-                        "multi_query_ranks": [],
-                    }
-
-                fused[result_id][
-                    "multi_query_score"
-                ] += contribution
-
-                fused[result_id][
-                    "multi_query_matches"
-                ] += 1
-
-                fused[result_id][
-                    "multi_query_sources"
-                ].append(
-                    query_index + 1
-                )
-
-                fused[result_id][
-                    "multi_query_ranks"
-                ].append(rank)
-
-        # ---------------------------------------------------------
-        # Build fused results
-        # ---------------------------------------------------------
-
-        ranked: list[dict[str, Any]] = []
-
-        for item in fused.values():
-
-            result = dict(
-                item["result"]
-            )
-
-            result[
-                "multi_query_score"
-            ] = item[
-                "multi_query_score"
-            ]
-
-            result[
-                "multi_query_matches"
-            ] = item[
-                "multi_query_matches"
-            ]
-
-            result[
-                "multi_query_sources"
-            ] = item[
-                "multi_query_sources"
-            ]
-
-            result[
-                "multi_query_ranks"
-            ] = item[
-                "multi_query_ranks"
-            ]
-
-            ranked.append(result)
-
-        # ---------------------------------------------------------
-        # Final multi-query ranking
-        # ---------------------------------------------------------
-
-        ranked.sort(
-            key=lambda result: (
-                result.get(
-                    "multi_query_score",
-                    0.0,
-                ),
-                result.get(
-                    "multi_query_matches",
-                    0,
-                ),
-                result.get(
-                    "hybrid_score",
-                    0.0,
-                ),
-            ),
-            reverse=True,
-        )
-
-        final_results = ranked[:top_k]
-
-        # ---------------------------------------------------------
-        # Assign multi-query rank
-        # ---------------------------------------------------------
-
-        for rank, result in enumerate(
-            final_results,
-            start=1,
-        ):
-            result[
-                "multi_query_rank"
-            ] = rank
-
-        return final_results
-
-    # =============================================================
-    # Citation-aware final retrieval
-    # =============================================================
-
-    def search(
-        self,
-        query: str,
-        top_k: int = 5,
-    ) -> list[dict[str, Any]]:
-
-        if not query.strip():
-            return []
-
-        top_k = min(
-            max(1, top_k),
-            MAX_TOP_K,
-        )
-
-        # ---------------------------------------------------------
-        # Multi-query hybrid retrieval
-        # ---------------------------------------------------------
-
-        candidates = self.multi_query_search(
-            query,
-            top_k=top_k,
+        candidates = self.vector_store.search(
+            query_embedding=query_embedding,
+            top_k=candidate_k,
+            document_id=document_id,
         )
 
         if not candidates:
             return []
 
-        # ---------------------------------------------------------
+        # ----------------------------------------------------
         # Cross-encoder reranking
         #
-        # Reranking is intentionally performed against the
-        # ORIGINAL user query rather than an expanded query.
-        # This keeps final ranking aligned with user intent.
-        # ---------------------------------------------------------
-
-        rerank_k = min(
-            len(candidates),
-            max(
-                top_k,
-                self.rerank_candidates,
-            ),
-        )
+        # Always rerank using the ORIGINAL user query.
+        # ----------------------------------------------------
 
         rerank_candidates = candidates[
-            :rerank_k
+            : self.rerank_candidates
         ]
 
         reranked = self.reranker.rerank(
             query,
             rerank_candidates,
+            top_k=top_k,
         )
 
-        # ---------------------------------------------------------
-        # Build final result objects
-        # ---------------------------------------------------------
+        # ----------------------------------------------------
+        # Normalize final result objects.
+        # ----------------------------------------------------
 
-        results: list[
-            dict[str, Any]
-        ] = []
+        results: list[dict[str, Any]] = []
 
         for rank, result in enumerate(
             reranked[:top_k],
             start=1,
         ):
 
-            metadata = dict(
-                result.get(
-                    "metadata",
-                    {},
-                )
+            metadata = result.get(
+                "metadata",
+                {},
             )
 
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            result_document_id = result.get(
+                "document_id"
+            )
+
+            if result_document_id is None:
+                result_document_id = metadata.get(
+                    "document_id"
+                )
+
+            result_chunk_id = result.get(
+                "chunk_id"
+            )
+
+            if result_chunk_id is None:
+                result_chunk_id = metadata.get(
+                    "chunk_id"
+                )
+
             enriched = {
-                "text": result[
-                    "text"
-                ],
+                "result_id": result.get(
+                    "result_id"
+                ),
+
+                "rank": rank,
+
+                "text": result.get(
+                    "text",
+                    "",
+                ),
 
                 "score": result.get(
-                    "score",
-                    result.get(
-                        "rerank_score"
-                    ),
+                    "score"
                 ),
 
                 "rerank_score": result.get(
                     "rerank_score"
                 ),
 
-                "hybrid_score": result.get(
-                    "hybrid_score"
+                "document_id": (
+                    result_document_id
                 ),
 
-                "semantic_score": result.get(
-                    "semantic_score"
+                "chunk_id": (
+                    result_chunk_id
                 ),
-
-                "keyword_score": result.get(
-                    "keyword_score"
-                ),
-
-                "semantic_rank": result.get(
-                    "semantic_rank"
-                ),
-
-                "keyword_rank": result.get(
-                    "keyword_rank"
-                ),
-
-                "retrieval_sources": result.get(
-                    "retrieval_sources",
-                    [],
-                ),
-
-                "retrieval_source_count": result.get(
-                    "retrieval_source_count",
-                    0,
-                ),
-
-                # -------------------------------------------------
-                # Multi-query metadata
-                # -------------------------------------------------
-
-                "multi_query_score": result.get(
-                    "multi_query_score"
-                ),
-
-                "multi_query_rank": result.get(
-                    "multi_query_rank"
-                ),
-
-                "multi_query_matches": result.get(
-                    "multi_query_matches"
-                ),
-
-                "multi_query_sources": result.get(
-                    "multi_query_sources",
-                    [],
-                ),
-
-                "multi_query_ranks": result.get(
-                    "multi_query_ranks",
-                    [],
-                ),
-
-                # -------------------------------------------------
-                # Identity
-                # -------------------------------------------------
-
-                "result_id": result.get(
-                    "result_id"
-                ),
-
-                "chunk_id": metadata.get(
-                    "chunk_id"
-                ),
-
-                "document_id": metadata.get(
-                    "document_id"
-                ),
-
-                # -------------------------------------------------
-                # Source metadata
-                # -------------------------------------------------
 
                 "source": metadata.get(
                     "source"
@@ -929,285 +337,309 @@ class DocumentKnowledgeBase:
                     "page_number"
                 ),
 
-                "chunk": metadata.get(
-                    "chunk"
-                ),
-
                 "chunk_index": metadata.get(
                     "chunk_index"
                 ),
 
                 "metadata": metadata,
+
+                "retrieval_source": (
+                    "persistent_qdrant"
+                ),
+
+                "document_filter": (
+                    document_id
+                ),
             }
 
-            results.append(
-                enriched
-            )
+            results.append(enriched)
 
-        # ---------------------------------------------------------
-        # Build structured citations
-        # ---------------------------------------------------------
+        # ----------------------------------------------------
+        # Structured citations
+        # ----------------------------------------------------
 
         for index, result in enumerate(
             results,
             start=1,
         ):
-
-            result[
-                "citation"
-            ] = build_citation(
+            result["citation"] = build_citation(
                 result,
                 index,
             )
 
         return results
 
-    # =============================================================
-    # Document information
-    # =============================================================
+    # ========================================================
+    # DOCUMENT INFORMATION
+    # ========================================================
 
     def get_document_info(
         self,
+        document_id: str | None = None,
     ) -> dict[str, Any]:
 
+        if document_id is not None:
+            document_id = str(
+                document_id
+            ).strip()
+
+            document = (
+                self.document_manager.get_document(
+                    document_id
+                )
+            )
+
+            if document is None:
+                raise ValueError(
+                    f"Document not found: "
+                    f"{document_id}"
+                )
+
+            vector_count = (
+                self.vector_store.count(
+                    document_id=document_id
+                )
+            )
+
+            return {
+                "document": document,
+                "vector_count": vector_count,
+                "indexed": vector_count > 0,
+            }
+
+        registry_info = (
+            self.document_manager.get_registry_info()
+        )
+
+        collection_info = (
+            self.vector_store.collection_info()
+        )
+
         return {
-            "file_path": str(
-                self.file_path
-            ),
-
-            "document_name": (
-                self.file_path.name
-            ),
-
-            "chunk_count": len(
-                self.chunks
-            ),
-
-            "chunk_size": (
-                self.chunk_size
-            ),
-
-            "chunk_overlap": (
-                self.chunk_overlap
-            ),
-
-            "chunking_strategy": (
-                "sentence_aware"
-            ),
-
-            # -----------------------------------------------------
-            # Hybrid retrieval
-            # -----------------------------------------------------
-
-            "semantic_weight": (
-                self.semantic_weight
-            ),
-
-            "keyword_weight": (
-                self.keyword_weight
-            ),
-
-            "fusion": "rrf",
-
-            "rrf_k": (
-                self.rrf_k
-            ),
-
-            # -----------------------------------------------------
-            # Multi-query retrieval
-            # -----------------------------------------------------
-
-            "multi_query": True,
-
-            "max_queries": (
-                self.max_queries
-            ),
-
-            "multi_query_weights": (
-                self.multi_query_weights
-            ),
-
-            "query_expansion": (
-                "deterministic"
-            ),
-
-            # -----------------------------------------------------
-            # Reranking
-            # -----------------------------------------------------
-
-            "reranking": (
-                "cross_encoder"
-            ),
-
-            "rerank_candidates": (
-                self.rerank_candidates
-            ),
-
-            # -----------------------------------------------------
-            # Citations
-            # -----------------------------------------------------
-
-            "citations": True,
+            "registry": registry_info,
+            "vector_store": collection_info,
         }
 
+    # ========================================================
+    # LIST DOCUMENTS
+    # ========================================================
 
-# ================================================================
+    def list_documents(
+        self,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+
+        documents = (
+            self.document_manager.list_documents(
+                status=status
+            )
+        )
+
+        enriched_documents = []
+
+        for document in documents:
+
+            document_id = document.get(
+                "document_id"
+            )
+
+            vector_count = (
+                self.vector_store.count(
+                    document_id=document_id
+                )
+                if document_id
+                else 0
+            )
+
+            enriched = dict(document)
+
+            enriched[
+                "vector_count"
+            ] = vector_count
+
+            enriched[
+                "indexed"
+            ] = vector_count > 0
+
+            enriched_documents.append(
+                enriched
+            )
+
+        return enriched_documents
+
+    # ========================================================
+    # CLOSE
+    # ========================================================
+
+    def close(self) -> None:
+
+        self.vector_store.close()
+
+
+# ============================================================
 # GLOBAL KNOWLEDGE BASE
-# ================================================================
+# ============================================================
 
 _KNOWLEDGE_BASE: (
-    DocumentKnowledgeBase | None
+    PersistentDocumentKnowledgeBase | None
 ) = None
 
 
-def get_knowledge_base() -> DocumentKnowledgeBase:
+def get_knowledge_base(
+) -> PersistentDocumentKnowledgeBase:
 
     global _KNOWLEDGE_BASE
 
     if _KNOWLEDGE_BASE is None:
 
-        default_document = (
-            Path(__file__).resolve().parents[1]
-            / "data"
-            / "raw"
-            / "sample.pdf"
-        )
-
         _KNOWLEDGE_BASE = (
-            DocumentKnowledgeBase(
-                default_document
-            )
+            PersistentDocumentKnowledgeBase()
         )
 
     return _KNOWLEDGE_BASE
 
 
-# ================================================================
+# ============================================================
 # MCP SERVER
-# ================================================================
+# ============================================================
 
 server = MCPServer(
     name="document-server"
 )
 
 
-# ================================================================
+# ============================================================
 # SEARCH DOCUMENTS TOOL
-# ================================================================
+# ============================================================
+
 
 @server.tool()
 def search_documents(
     query: str,
-    top_k: int = 5,
+    top_k: int = DEFAULT_TOP_K,
+    document_id: str | None = None,
 ) -> dict[str, Any]:
 
     """
-    Search the document knowledge base.
+    Search persistent OmniMind document memory.
 
-    Retrieval pipeline:
+    Supports:
+
+        Global search:
+            search_documents(
+                query="machine learning"
+            )
+
+        Document-specific search:
+            search_documents(
+                query="machine learning",
+                document_id="doc-..."
+            )
+
+    Retrieval:
 
         Query
           ↓
-        Query Expansion
+        Embedding
           ↓
-        Hybrid Semantic + BM25
+        Persistent Qdrant
           ↓
-        Weighted Multi-Query RRF
+        Optional document filter
           ↓
-        Cross-Encoder Reranking
+        Cross-encoder reranking
           ↓
-        Structured Citations
-
-    Returns document evidence with source attribution,
-    retrieval scores, multi-query metadata, and citations.
+        Structured citations
     """
-
-    if not isinstance(query, str):
-        raise TypeError(
-            "query must be a string."
-        )
-
-    query = query.strip()
-
-    if not query:
-        raise ValueError(
-            "query cannot be empty."
-        )
-
-    if not isinstance(top_k, int):
-        raise TypeError(
-            "top_k must be an integer."
-        )
-
-    if top_k < 1 or top_k > MAX_TOP_K:
-        raise ValueError(
-            f"top_k must be between "
-            f"1 and {MAX_TOP_K}."
-        )
 
     kb = get_knowledge_base()
 
     results = kb.search(
-        query,
+        query=query,
         top_k=top_k,
+        document_id=document_id,
     )
 
     return {
-        "query": query,
+        "query": query.strip(),
+
+        "document_id": document_id,
 
         "results": results,
 
+        "count": len(results),
+
         "retrieval": {
             "semantic": True,
-            "bm25": True,
-
-            "fusion": "weighted_multi_query_rrf",
-
-            "rrf_k": (
-                kb.rrf_k
+            "bm25": False,
+            "fusion": "persistent_qdrant",
+            "persistent": True,
+            "document_filter": (
+                document_id is not None
             ),
-
-            "multi_query": True,
-
-            "max_queries": (
-                kb.max_queries
-            ),
-
-            "multi_query_weights": (
-                kb.multi_query_weights
-            ),
-
-            "query_expansion": (
-                "deterministic"
-            ),
-
-            "reranking": (
-                "cross_encoder"
-            ),
-
+            "reranking": "cross_encoder",
             "citations": True,
         },
     }
 
 
-# ================================================================
-# DOCUMENT INFO TOOL
-# ================================================================
+# ============================================================
+# DOCUMENT INFORMATION TOOL
+# ============================================================
+
 
 @server.tool()
-def get_document_info() -> dict[str, Any]:
+def get_document_info(
+    document_id: str | None = None,
+) -> dict[str, Any]:
 
     """
-    Return metadata about the loaded document
-    and retrieval configuration.
+    Return information about all indexed documents
+    or one specific document.
     """
 
-    return get_knowledge_base().get_document_info()
+    return get_knowledge_base().get_document_info(
+        document_id=document_id
+    )
 
 
-# ================================================================
+# ============================================================
+# LIST DOCUMENTS TOOL
+# ============================================================
+
+
+@server.tool()
+def list_documents(
+    status: str | None = None,
+) -> dict[str, Any]:
+
+    """
+    List registered documents.
+
+    Optional status values:
+
+        registered
+        processing
+        indexed
+        failed
+        removed
+    """
+
+    documents = (
+        get_knowledge_base().list_documents(
+            status=status
+        )
+    )
+
+    return {
+        "documents": documents,
+        "count": len(documents),
+    }
+
+
+# ============================================================
 # SERVER ENTRY POINT
-# ================================================================
+# ============================================================
+
 
 if __name__ == "__main__":
     server.run()

@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+import sys
+
 from sentence_transformers import CrossEncoder
 
 
@@ -10,14 +14,18 @@ class CrossEncoderReranker:
     ):
         self.model_name = model_name
 
+        # MCP uses stdout for JSON-RPC.
+        # Diagnostic messages must therefore go to stderr.
         print(
-            f"Loading reranker model: {model_name}"
+            f"Loading reranker model: {model_name}",
+            file=sys.stderr,
         )
 
         self.model = CrossEncoder(model_name)
 
         print(
-            "Reranker model loaded successfully."
+            "Reranker model loaded successfully.",
+            file=sys.stderr,
         )
 
     def rerank(
@@ -40,7 +48,7 @@ class CrossEncoderReranker:
 
         scores = self.model.predict(
             pairs,
-            show_progress_bar=True,
+            show_progress_bar=False,
         )
 
         reranked = []

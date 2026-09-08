@@ -1,9 +1,16 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import sys
 from pathlib import Path
 
-from mcp import ClientSession, StdioServerParameters
+
+from mcp import (
+    ClientSession,
+    StdioServerParameters,
+)
+
 from mcp.client.stdio import stdio_client
 
 
@@ -11,7 +18,9 @@ from mcp.client.stdio import stdio_client
 # PROJECT PATH
 # ============================================================
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = (
+    Path(__file__).resolve().parents[1]
+)
 
 SERVER_PATH = (
     PROJECT_ROOT
@@ -24,12 +33,15 @@ SERVER_PATH = (
 # DOCUMENT MCP CLIENT
 # ============================================================
 
+
 class DocumentMCPClient:
     """
     Client adapter for the OmniMind Document MCP Server.
 
     Available MCP tools:
+
         - get_document_info
+        - list_documents
         - search_documents
     """
 
@@ -53,10 +65,6 @@ class DocumentMCPClient:
         tool_name: str,
         arguments: dict,
     ) -> dict:
-        """
-        Connect to the Document MCP Server and
-        execute the requested tool.
-        """
 
         async with stdio_client(
             self.server_params
@@ -75,7 +83,7 @@ class DocumentMCPClient:
                 )
 
                 # ------------------------------------------------
-                # Preferred structured MCP response
+                # Preferred structured response
                 # ------------------------------------------------
 
                 if result.structured_content:
@@ -83,7 +91,7 @@ class DocumentMCPClient:
                     return result.structured_content
 
                 # ------------------------------------------------
-                # Fallback: parse text response
+                # Text fallback
                 # ------------------------------------------------
 
                 for content in result.content:
@@ -116,10 +124,6 @@ class DocumentMCPClient:
                     except json.JSONDecodeError:
                         continue
 
-                # ------------------------------------------------
-                # Empty response fallback
-                # ------------------------------------------------
-
                 return {
                     "results": [],
                     "count": 0,
@@ -135,14 +139,40 @@ class DocumentMCPClient:
 
     async def get_document_info(
         self,
+        document_id: str | None = None,
     ) -> dict:
-        """
-        Get metadata about the indexed document.
-        """
+
+        arguments = {}
+
+        if document_id is not None:
+            arguments[
+                "document_id"
+            ] = document_id
 
         return await self._call_tool(
             tool_name="get_document_info",
-            arguments={},
+            arguments=arguments,
+        )
+
+    # ========================================================
+    # LIST DOCUMENTS
+    # ========================================================
+
+    async def list_documents(
+        self,
+        status: str | None = None,
+    ) -> dict:
+
+        arguments = {}
+
+        if status is not None:
+            arguments[
+                "status"
+            ] = status
+
+        return await self._call_tool(
+            tool_name="list_documents",
+            arguments=arguments,
         )
 
     # ========================================================
@@ -153,17 +183,22 @@ class DocumentMCPClient:
         self,
         query: str,
         top_k: int = 5,
+        document_id: str | None = None,
     ) -> dict:
-        """
-        Search the document through the MCP server.
-        """
+
+        arguments = {
+            "query": query,
+            "top_k": top_k,
+        }
+
+        if document_id is not None:
+            arguments[
+                "document_id"
+            ] = document_id
 
         return await self._call_tool(
             tool_name="search_documents",
-            arguments={
-                "query": query,
-                "top_k": top_k,
-            },
+            arguments=arguments,
         )
 
 
@@ -171,27 +206,39 @@ class DocumentMCPClient:
 # SYNCHRONOUS HELPERS
 # ============================================================
 
-def get_document_info() -> dict:
-    """
-    Synchronous helper for document metadata.
-    """
+
+def get_document_info(
+    document_id: str | None = None,
+) -> dict:
 
     return asyncio.run(
-        DocumentMCPClient().get_document_info()
+        DocumentMCPClient().get_document_info(
+            document_id=document_id
+        )
+    )
+
+
+def list_documents(
+    status: str | None = None,
+) -> dict:
+
+    return asyncio.run(
+        DocumentMCPClient().list_documents(
+            status=status
+        )
     )
 
 
 def search_documents(
     query: str,
     top_k: int = 5,
+    document_id: str | None = None,
 ) -> dict:
-    """
-    Synchronous helper for document search.
-    """
 
     return asyncio.run(
         DocumentMCPClient().search_documents(
             query=query,
             top_k=top_k,
+            document_id=document_id,
         )
     )
