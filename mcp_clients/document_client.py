@@ -5,13 +5,14 @@ import json
 import sys
 from pathlib import Path
 
-
 from mcp import (
     ClientSession,
     StdioServerParameters,
 )
 
 from mcp.client.stdio import stdio_client
+
+from rag.embeddings.embedder import EmbeddingModel
 
 
 # ============================================================
@@ -33,19 +34,27 @@ SERVER_PATH = (
 # DOCUMENT MCP CLIENT
 # ============================================================
 
-
 class DocumentMCPClient:
     """
     Client adapter for the OmniMind Document MCP Server.
+
+    The client owns query embedding.
 
     Available MCP tools:
 
         - get_document_info
         - list_documents
         - search_documents
+
+    The embedding model is loaded in the main process instead
+    of the MCP subprocess. This prevents duplicate model
+    loading and significantly reduces memory pressure.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        embedding_model: EmbeddingModel | None = None,
+    ) -> None:
 
         self.server_params = (
             StdioServerParameters(
@@ -54,6 +63,12 @@ class DocumentMCPClient:
                     str(SERVER_PATH),
                 ],
             )
+        )
+
+        self.embedding_model = (
+            embedding_model
+            if embedding_model is not None
+            else EmbeddingModel()
         )
 
     # ========================================================
@@ -122,6 +137,7 @@ class DocumentMCPClient:
                             return parsed
 
                     except json.JSONDecodeError:
+
                         continue
 
                 return {
@@ -145,6 +161,7 @@ class DocumentMCPClient:
         arguments = {}
 
         if document_id is not None:
+
             arguments[
                 "document_id"
             ] = document_id
@@ -166,6 +183,7 @@ class DocumentMCPClient:
         arguments = {}
 
         if status is not None:
+
             arguments[
                 "status"
             ] = status
@@ -186,12 +204,24 @@ class DocumentMCPClient:
         document_id: str | None = None,
     ) -> dict:
 
+        # ----------------------------------------------------
+        # Generate embedding in the MAIN process.
+        # ----------------------------------------------------
+
+        query_embedding = (
+            self.embedding_model.encode_single(
+                query
+            )
+        )
+
         arguments = {
             "query": query,
+            "query_embedding": query_embedding,
             "top_k": top_k,
         }
 
         if document_id is not None:
+
             arguments[
                 "document_id"
             ] = document_id
@@ -205,7 +235,6 @@ class DocumentMCPClient:
 # ============================================================
 # SYNCHRONOUS HELPERS
 # ============================================================
-
 
 def get_document_info(
     document_id: str | None = None,
