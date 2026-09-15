@@ -107,9 +107,7 @@ class DocumentIngestionPipeline:
             allow_duplicate=allow_duplicate,
         )
 
-        document_id = document[
-            "document_id"
-        ]
+        document_id = document["document_id"]
 
         try:
             # ----------------------------------------------------------
@@ -156,10 +154,8 @@ class DocumentIngestionPipeline:
                 for chunk in chunks
             ]
 
-            embeddings = (
-                self.embedding_model.encode(
-                    texts
-                )
+            embeddings = self.embedding_model.encode(
+                texts
             )
 
             if len(embeddings) != len(chunks):
@@ -170,20 +166,22 @@ class DocumentIngestionPipeline:
             # ----------------------------------------------------------
             # Qdrant
             # ----------------------------------------------------------
+            #
+            # QdrantVectorStore.add_documents() returns the number
+            # of vectors indexed, not a list of point IDs.
+            # ----------------------------------------------------------
 
-            point_ids = (
-                self.vector_store.add_documents(
-                    chunks,
-                    embeddings,
-                )
+            vector_count = self.vector_store.add_documents(
+                chunks,
+                embeddings,
             )
 
-            if point_ids is None:
+            if vector_count is None:
                 raise ValueError(
-                    "Vector store did not return point IDs."
+                    "Vector store did not return an indexed vector count."
                 )
 
-            if len(point_ids) != len(chunks):
+            if vector_count != len(chunks):
                 raise ValueError(
                     "Qdrant point count does not match chunk count."
                 )
@@ -192,10 +190,8 @@ class DocumentIngestionPipeline:
             # Verify actual indexed count
             # ----------------------------------------------------------
 
-            indexed_count = (
-                self.vector_store.count(
-                    document_id=document_id
-                )
+            indexed_count = self.vector_store.count(
+                document_id=document_id
             )
 
             if indexed_count != len(chunks):
@@ -208,11 +204,9 @@ class DocumentIngestionPipeline:
             # Mark indexed
             # ----------------------------------------------------------
 
-            updated_document = (
-                self.document_manager.update_status(
-                    document_id,
-                    "indexed",
-                )
+            updated_document = self.document_manager.update_status(
+                document_id,
+                "indexed",
             )
 
             # ----------------------------------------------------------
@@ -226,9 +220,7 @@ class DocumentIngestionPipeline:
                     "document_name"
                 ),
                 "file_path": str(path),
-                "status": updated_document[
-                    "status"
-                ],
+                "status": updated_document["status"],
                 "page_count": document.get(
                     "page_count",
                     len(pages),
@@ -238,7 +230,7 @@ class DocumentIngestionPipeline:
                     len(pages),
                 ),
                 "chunk_count": len(chunks),
-                "vector_count": len(point_ids),
+                "vector_count": vector_count,
                 "chunk_size": self.chunk_size,
                 "chunk_overlap": self.chunk_overlap,
             }
@@ -295,27 +287,22 @@ class DocumentIngestionPipeline:
                     .resolve()
                 )
 
-                document = (
-                    self.document_manager
-                    .get_document_by_path(path)
+                document = self.document_manager.get_document_by_path(
+                    path
                 )
 
                 results.append(
                     {
                         "success": False,
                         "document_id": (
-                            document.get(
-                                "document_id"
-                            )
+                            document.get("document_id")
                             if document
                             else None
                         ),
                         "document_name": path.name,
                         "file_path": str(path),
                         "status": (
-                            document.get(
-                                "status"
-                            )
+                            document.get("status")
                             if document
                             else "failed"
                         ),
@@ -333,7 +320,9 @@ class DocumentIngestionPipeline:
         self,
         document_id: str,
     ) -> dict[str, Any] | None:
-        """Return registry information for a document."""
+        """
+        Return registry information for a document.
+        """
 
         return self.document_manager.get_document(
             document_id
@@ -355,10 +344,8 @@ class DocumentIngestionPipeline:
         The original PDF is never deleted by this method.
         """
 
-        document = (
-            self.document_manager.get_document(
-                document_id
-            )
+        document = self.document_manager.get_document(
+            document_id
         )
 
         if document is None:
@@ -378,7 +365,9 @@ class DocumentIngestionPipeline:
     # ------------------------------------------------------------------
 
     def close(self) -> None:
-        """Close the underlying vector store."""
+        """
+        Close the underlying vector store.
+        """
 
         if self.vector_store is not None:
             self.vector_store.close()

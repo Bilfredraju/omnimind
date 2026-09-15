@@ -1,22 +1,8 @@
-"""
-Persistent Qdrant vector store for OmniMind.
-
-Supports:
-- Persistent local Qdrant storage
-- Multi-document indexing
-- Globally stable vector IDs
-- Document-level filtering
-- Deterministic re-indexing
-- Document-specific deletion
-- Metadata preservation
-"""
-
 from __future__ import annotations
 
-import hashlib
-import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
+from uuid import NAMESPACE_URL, uuid5
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -25,305 +11,136 @@ from qdrant_client.models import (
     Filter,
     MatchValue,
     PointStruct,
-    FilterSelector,
     VectorParams,
 )
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+COLLECTION_NAME = "omnimind_documents"
+VECTOR_SIZE = 384
+
+# Persistent Qdrant server.
+QDRANT_URL = "http://127.0.0.1:6333"
+
+
 class QdrantVectorStore:
     """
-    Persistent local Qdrant vector store for OmniMind.
+    Persistent multi-document vector store backed by a Qdrant server.
 
-    Each vector is identified deterministically using:
-
-        document_id + chunk_id
-
-    This prevents vector ID collisions when multiple documents
-    are indexed into the same collection.
+    The Qdrant server owns the underlying persistent storage.
+    Multiple OmniMind processes can safely connect to it.
     """
 
     def __init__(
         self,
-        collection_name: str = "omnimind_documents",
-        vector_size: int = 384,
-        storage_path: str = "data/vector_store/qdrant",
+        collection_name: str = COLLECTION_NAME,
+        url: str = QDRANT_URL,
     ):
         self.collection_name = collection_name
-        self.vector_size = vector_size
-
-        storage = Path(storage_path)
-        storage.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        self.storage_path = storage
+        self.url = url
 
         self.client = QdrantClient(
-            path=str(storage)
+            url=self.url,
         )
 
-        self._create_collection()
+        self._ensure_collection()
 
     # ------------------------------------------------------------------
     # Collection
     # ------------------------------------------------------------------
 
-    def _create_collection(self):
-        """Create the collection if it doesn't exist."""
+    def _ensure_collection(self) -> None:
+        collections = self.client.get_collections().collections
 
-        existing_collections = [
-            collection.name
-            for collection in (
-                self.client
-                .get_collections()
-                .collections
-            )
-        ]
-
-        if self.collection_name not in existing_collections:
-            self.client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=VectorParams(
-                    size=self.vector_size,
-                    distance=Distance.COSINE,
-                ),
-            )
-
-            print(
-                f"Created Qdrant collection: "
-                f"{self.collection_name}"
-            )
-
-        else:
+        if any(
+            collection.name == self.collection_name
+            for collection in collections
+        ):
             print(
                 f"Qdrant collection already exists: "
                 f"{self.collection_name}"
             )
+            return
+
+        self.client.create_collection(
+            collection_name=self.collection_name,
+            vectors_config=VectorParams(
+                size=VECTOR_SIZE,
+                distance=Distance.COSINE,
+            ),
+        )
+
+        print(
+            f"Created Qdrant collection: "
+            f"{self.collection_name}"
+        )
 
     # ------------------------------------------------------------------
-    # Stable IDs
+    # Stable point IDs
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _stable_point_id(
+    def _point_id(
         document_id: str,
         chunk_id: str,
     ) -> str:
         """
-        Generate a deterministic UUID for a document chunk.
-
-        The same document_id + chunk_id combination always produces
-        the same Qdrant point ID.
+        Generate a deterministic UUID from document + chunk IDs.
         """
-
-        identity = (
-            f"{str(document_id).strip()}::"
-            f"{str(chunk_id).strip()}"
-        )
 
         return str(
-            uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                identity,
+            uuid5(
+                NAMESPACE_URL,
+                f"{document_id}::{chunk_id}",
             )
-        )
-
-    @staticmethod
-    def _fallback_chunk_id(
-        chunk: dict[str, Any],
-        index: int,
-    ) -> str:
-        """
-        Generate a deterministic chunk ID if the chunk doesn't
-        already contain one.
-        """
-
-        metadata = chunk.get(
-            "metadata",
-            {},
-        )
-
-        if not isinstance(metadata, dict):
-            metadata = {}
-
-        text = str(
-            chunk.get(
-                "text",
-                "",
-            )
-        )
-
-        page = str(
-            metadata.get(
-                "page",
-                metadata.get(
-                    "page_number",
-                    "",
-                ),
-            )
-        )
-
-        raw_identity = (
-            f"{page}::{index}::{text}"
-        )
-
-        digest = hashlib.sha256(
-            raw_identity.encode("utf-8")
-        ).hexdigest()
-
-        return f"chunk-{digest[:16]}"
-
-    @classmethod
-    def _get_document_id(
-        cls,
-        chunk: dict[str, Any],
-    ) -> str:
-        """Extract document_id from a chunk."""
-
-        metadata = chunk.get(
-            "metadata",
-            {},
-        )
-
-        if not isinstance(metadata, dict):
-            metadata = {}
-
-        document_id = metadata.get(
-            "document_id"
-        )
-
-        if not document_id:
-            document_id = chunk.get(
-                "document_id"
-            )
-
-        if not document_id:
-            raise ValueError(
-                "Chunk is missing required document_id."
-            )
-
-        return str(document_id)
-
-    @classmethod
-    def _get_chunk_id(
-        cls,
-        chunk: dict[str, Any],
-        index: int,
-    ) -> str:
-        """Extract chunk_id or create a deterministic fallback."""
-
-        metadata = chunk.get(
-            "metadata",
-            {},
-        )
-
-        if not isinstance(metadata, dict):
-            metadata = {}
-
-        chunk_id = metadata.get(
-            "chunk_id"
-        )
-
-        if not chunk_id:
-            chunk_id = chunk.get(
-                "chunk_id"
-            )
-
-        if chunk_id:
-            return str(chunk_id)
-
-        return cls._fallback_chunk_id(
-            chunk,
-            index,
         )
 
     # ------------------------------------------------------------------
-    # Indexing
+    # Add documents
     # ------------------------------------------------------------------
 
     def add_documents(
         self,
-        chunks: list[dict],
+        chunks: list[dict[str, Any]],
         embeddings: list[list[float]],
-    ) -> list[str]:
-        """
-        Store document chunks and embeddings.
-
-        Existing points with the same deterministic ID are updated
-        rather than duplicated.
-
-        Returns:
-            List of Qdrant point IDs.
-        """
-
+    ) -> int:
         if len(chunks) != len(embeddings):
             raise ValueError(
-                "Number of chunks and embeddings must match."
+                "chunks and embeddings must have the same length"
             )
 
         if not chunks:
-            return []
+            return 0
 
         points: list[PointStruct] = []
-        point_ids: list[str] = []
 
-        for index, (
-            chunk,
-            embedding,
-        ) in enumerate(
-            zip(chunks, embeddings)
-        ):
-            text = str(
-                chunk.get(
-                    "text",
-                    "",
-                )
-            ).strip()
+        for chunk, embedding in zip(chunks, embeddings):
+            metadata = dict(
+                chunk.get("metadata", {})
+            )
 
-            if not text:
+            document_id = metadata.get("document_id")
+            chunk_id = metadata.get("chunk_id")
+
+            if not document_id:
                 raise ValueError(
-                    f"Chunk at index {index} "
-                    f"contains empty text."
+                    "Each chunk must contain metadata.document_id"
                 )
 
-            document_id = self._get_document_id(
-                chunk
+            if not chunk_id:
+                raise ValueError(
+                    "Each chunk must contain metadata.chunk_id"
+                )
+
+            point_id = self._point_id(
+                document_id=document_id,
+                chunk_id=chunk_id,
             )
-
-            chunk_id = self._get_chunk_id(
-                chunk,
-                index,
-            )
-
-            point_id = self._stable_point_id(
-                document_id,
-                chunk_id,
-            )
-
-            metadata = chunk.get(
-                "metadata",
-                {},
-            )
-
-            if not isinstance(metadata, dict):
-                metadata = {}
-
-            stored_metadata = dict(
-                metadata
-            )
-
-            stored_metadata[
-                "document_id"
-            ] = document_id
-
-            stored_metadata[
-                "chunk_id"
-            ] = chunk_id
 
             payload = {
-                "text": text,
-                "metadata": stored_metadata,
+                "text": chunk.get("text", ""),
+                "metadata": metadata,
                 "document_id": document_id,
                 "chunk_id": chunk_id,
             }
@@ -331,12 +148,10 @@ class QdrantVectorStore:
             points.append(
                 PointStruct(
                     id=point_id,
-                    vector=list(embedding),
+                    vector=embedding,
                     payload=payload,
                 )
             )
-
-            point_ids.append(point_id)
 
         self.client.upsert(
             collection_name=self.collection_name,
@@ -344,11 +159,7 @@ class QdrantVectorStore:
             wait=True,
         )
 
-        print(
-            f"Stored {len(points)} chunks in Qdrant."
-        )
-
-        return point_ids
+        return len(points)
 
     # ------------------------------------------------------------------
     # Search
@@ -358,29 +169,14 @@ class QdrantVectorStore:
         self,
         query_embedding: list[float],
         top_k: int = 5,
-        document_id: str | None = None,
+        document_id: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        """
-        Search vectors using cosine similarity.
-
-        Optionally restrict results to one document.
-        """
-
-        if top_k <= 0:
-            return []
+        if top_k < 1:
+            raise ValueError("top_k must be >= 1")
 
         query_filter = None
 
-        if document_id is not None:
-            document_id = str(
-                document_id
-            ).strip()
-
-            if not document_id:
-                raise ValueError(
-                    "document_id cannot be empty."
-                )
-
+        if document_id:
             query_filter = Filter(
                 must=[
                     FieldCondition(
@@ -392,59 +188,46 @@ class QdrantVectorStore:
                 ]
             )
 
-        response = self.client.query_points(
+        results = self.client.query_points(
             collection_name=self.collection_name,
-            query=list(query_embedding),
+            query=query_embedding,
             query_filter=query_filter,
             limit=top_k,
             with_payload=True,
-        )
+        ).points
 
-        results: list[dict[str, Any]] = []
+        output: list[dict[str, Any]] = []
 
-        for rank, point in enumerate(
-            response.points,
-            start=1,
-        ):
-            payload = (
-                point.payload
-                or {}
+        for rank, result in enumerate(results, start=1):
+            payload = result.payload or {}
+
+            metadata = dict(
+                payload.get("metadata", {})
             )
 
-            metadata = payload.get(
-                "metadata",
-                {},
+            output.append(
+                {
+                    "result_id": str(result.id),
+                    "rank": rank,
+                    "score": float(result.score),
+                    "text": payload.get("text", ""),
+                    "metadata": metadata,
+                    "document_id": payload.get(
+                        "document_id",
+                        metadata.get("document_id"),
+                    ),
+                    "chunk_id": payload.get(
+                        "chunk_id",
+                        metadata.get("chunk_id"),
+                    ),
+                    "document_name": metadata.get(
+                        "document_name"
+                    ),
+                    "page": metadata.get("page"),
+                }
             )
 
-            if not isinstance(metadata, dict):
-                metadata = {}
-
-            result = {
-                "result_id": str(point.id),
-                "score": float(point.score),
-                "rank": rank,
-                "text": payload.get(
-                    "text",
-                    "",
-                ),
-                "metadata": metadata,
-                "document_id": payload.get(
-                    "document_id",
-                    metadata.get(
-                        "document_id"
-                    ),
-                ),
-                "chunk_id": payload.get(
-                    "chunk_id",
-                    metadata.get(
-                        "chunk_id"
-                    ),
-                ),
-            }
-
-            results.append(result)
-
-        return results
+        return output
 
     # ------------------------------------------------------------------
     # Counts
@@ -452,82 +235,54 @@ class QdrantVectorStore:
 
     def count(
         self,
-        document_id: str | None = None,
+        document_id: Optional[str] = None,
     ) -> int:
-        """
-        Return total vector count.
+        query_filter = None
 
-        If document_id is provided, return only vectors belonging
-        to that document.
-        """
-
-        if document_id is None:
-            result = self.client.count(
-                collection_name=self.collection_name,
-                exact=True,
+        if document_id:
+            query_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="document_id",
+                        match=MatchValue(
+                            value=document_id
+                        ),
+                    )
+                ]
             )
 
-            return int(result.count)
-
-        document_id = str(
-            document_id
-        ).strip()
-
-        if not document_id:
-            return 0
-
-        query_filter = Filter(
-            must=[
-                FieldCondition(
-                    key="document_id",
-                    match=MatchValue(
-                        value=document_id
-                    ),
-                )
-            ]
-        )
-
-        result = self.client.count(
+        return self.client.count(
             collection_name=self.collection_name,
             count_filter=query_filter,
             exact=True,
-        )
-
-        return int(result.count)
+        ).count
 
     # ------------------------------------------------------------------
-    # Document operations
+    # Document existence
     # ------------------------------------------------------------------
 
     def document_exists(
         self,
         document_id: str,
     ) -> bool:
-        """Return True if the document has indexed vectors."""
+        return self.count(
+            document_id=document_id
+        ) > 0
 
-        return (
-            self.count(
-                document_id=document_id
-            )
-            > 0
-        )
+    # ------------------------------------------------------------------
+    # Delete document
+    # ------------------------------------------------------------------
 
     def delete_document(
         self,
         document_id: str,
-    ) -> None:
-        """
-        Delete all vectors belonging to a document.
-        """
+    ) -> int:
+        existing_count = self.count(
+            document_id=document_id
+        )
 
-        document_id = str(
-            document_id
-        ).strip()
-
-        if not document_id:
-            raise ValueError(
-                "document_id cannot be empty."
-            )
+        if existing_count == 0:
+            return 0
 
         query_filter = Filter(
             must=[
@@ -542,55 +297,37 @@ class QdrantVectorStore:
 
         self.client.delete(
             collection_name=self.collection_name,
-            points_selector=FilterSelector(
-                filter=query_filter
-            ),
+            points_selector=query_filter,
             wait=True,
         )
 
-        print(
-            f"Deleted vectors for document: "
-            f"{document_id}"
-        )
+        return existing_count
 
     # ------------------------------------------------------------------
-    # Information
+    # Collection information
     # ------------------------------------------------------------------
 
     def collection_info(self) -> dict[str, Any]:
-        """Return collection statistics."""
-
         info = self.client.get_collection(
-            collection_name=self.collection_name
+            self.collection_name
         )
 
         return {
             "collection_name": self.collection_name,
-            "vector_size": self.vector_size,
+            "vector_size": VECTOR_SIZE,
             "distance": "cosine",
-            "storage_path": str(
-                self.storage_path.resolve()
-            ),
+            "storage_path": None,
+            "qdrant_url": self.url,
             "count": self.count(),
-            "points_count": getattr(
-                info,
-                "points_count",
-                None,
-            ),
-            "indexed_vectors_count": getattr(
-                info,
-                "indexed_vectors_count",
-                None,
+            "points_count": info.points_count,
+            "indexed_vectors_count": (
+                info.indexed_vectors_count
             ),
         }
 
     # ------------------------------------------------------------------
-    # Lifecycle
+    # Close
     # ------------------------------------------------------------------
 
-    def close(self):
-        """Close the Qdrant client cleanly."""
-
-        if self.client is not None:
-            self.client.close()
-            self.client = None
+    def close(self) -> None:
+        self.client.close()
