@@ -1,4 +1,4 @@
-from hashlib import sha256
+﻿from hashlib import sha256
 from pathlib import Path
 
 import pymupdf
@@ -6,13 +6,17 @@ import pymupdf
 
 def _build_document_id(pdf_path: Path) -> str:
     """
-    Build a stable document identifier from the resolved file path.
+    Build a stable document identifier from the PDF file content.
 
-    The identifier is deterministic for the same file location and can
-    be used to associate pages/chunks with their source document.
+    The identifier is content-based rather than path-based, so the same
+    PDF content receives the same document ID even when the file is moved
+    or renamed.
     """
-    normalized_path = str(pdf_path.resolve()).lower()
-    digest = sha256(normalized_path.encode("utf-8")).hexdigest()
+    if not pdf_path.exists():
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+    digest = sha256(pdf_path.read_bytes()).hexdigest()
+
     return f"doc-{digest[:16]}"
 
 
@@ -36,7 +40,9 @@ def load_pdf(pdf_path: str) -> list[dict]:
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
     if not path.is_file():
-        raise ValueError(f"The provided PDF path is not a file: {pdf_path}")
+        raise ValueError(
+            f"The provided PDF path is not a file: {pdf_path}"
+        )
 
     if path.suffix.lower() != ".pdf":
         raise ValueError("The provided file must be a PDF.")
