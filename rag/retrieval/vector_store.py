@@ -1,9 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Optional
 from uuid import NAMESPACE_URL, uuid5
 
+from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -14,6 +16,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 
+load_dotenv()
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -21,7 +24,10 @@ COLLECTION_NAME = "omnimind_documents"
 VECTOR_SIZE = 384
 
 # Persistent Qdrant server.
-QDRANT_URL = "http://127.0.0.1:6333"
+QDRANT_URL = os.getenv(
+    "QDRANT_URL",
+    "http://127.0.0.1:6333",
+)
 
 
 class QdrantVectorStore:
