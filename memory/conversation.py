@@ -1,5 +1,5 @@
-from dataclasses import dataclass, asdict
-from datetime import datetime
+﻿from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
 
 
 @dataclass
@@ -17,7 +17,7 @@ class ConversationTurn:
         return cls(
             user=user,
             assistant=assistant,
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
     def to_dict(self) -> dict:

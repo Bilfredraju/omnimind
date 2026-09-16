@@ -1,4 +1,4 @@
-import re
+﻿import re
 from datetime import datetime
 
 
@@ -196,7 +196,7 @@ class MemoryExtractor:
             "metadata": {
                 "type": memory_type,
                 "importance": importance,
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "source": "conversation",
                 "query": user_message,
             },
